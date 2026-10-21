@@ -7,7 +7,7 @@ Jev sees text only.
 Retina is Fara on llama.cpp CUDA 12.4 at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
-import argparse, atexit, base64, ctypes, io, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid, win32job
+import argparse, ast, atexit, base64, ctypes, io, json, math, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid, win32job
 from contextlib import ExitStack, redirect_stdout
 from ctypes import wintypes
 from dataclasses import InitVar, dataclass
@@ -49,10 +49,15 @@ SCORE_MIN_LEVELS = 2
 DOUBLE_CLICKS = 2
 SCROLL_UP = 1
 DRAG_DURATION = 0.2
-RETINA_LONG_SIDE = 1280
-RETINA_TEMPERATURE = 0.2
-RETINA_TOP_K = 50
-RETINA_REPEAT_PENALTY = 1.0
+RETINA_TEMPERATURE = 0
+FARA_PATCH, FARA_MERGE = 16, 2
+FARA_FACTOR = FARA_PATCH * FARA_MERGE
+FARA_MIN_PIXELS = 1024 * FARA_FACTOR ** 2
+FARA_MAX_PIXELS = 4096 * FARA_FACTOR ** 2
+FARA_IMAGES = 3
+FARA_NEXT = 'Here is the next screenshot. Think about what to do next.'
+FARA_VIEW_H, FARA_VIEW_W = 900, 1440
+FARA_WHEEL = 100
 CAPTURE_SCALE = 1.0
 CAPTURE_NATIVE = 0
 DPI_AWARENESS = 2
@@ -114,8 +119,8 @@ You may consult Jev (text only) about whether a shorter story still supports the
 Jev never sees images. His numbers are evidence, never orders.
 
 YOUR EYE
-Retina describes the selected region in its own words. You choose the question.
-Boxes are 0–{NORM} inside the region. Current screenshot is current evidence; older accounts can be wrong.
+Retina is Fara. The first --retina "TASK" is the whole task. Each later look sends the new screenshot and the full text of every previous Fara reply, thoughts included, then the tool call. Do not rephrase the task on later looks. If Fara asked you a question, the next --retina "ANSWER" is that reply. Otherwise call --retina with no extra text.
+Fara returns one computer_use action. Coordinates are 0–{NORM}. Run the returned program with --hands, then look again.
 
 YOUR HAND
 Coordinates 0–{NORM} inside the selected rectangle. win32.py is the hand.
@@ -130,24 +135,56 @@ Source can be read and edited. Changes affect later calls and future wakes.
 You do not control the owner's session or inspect parent .env.
 '''
 
-RETINA_SYSTEM = f'''Describe the image as it is. Do not echo the question as fact.
-Return a JSON array of observations: each has image_id, self-chosen label, description in your words.
-Add bbox_2d ([xmin,ymin,xmax,ymax] integers 0–{NORM}) only for real visible regions.
-Report absence of requested objects without inventing boxes. Whole-scene observations need no box.
-State uncertainty. Return [] if nothing to say.'''
+FARA_IDENTITY = '''You are Fara, a computer use agent (CUA) specialized for web browsers. You are developed by Microsoft AI Frontiers. You assist users with completing and automating tasks that require the use of a web browser.
 
-RETINA_SCHEMA = dict(type='array', items=dict(type='object', properties=dict(
-    image_id=dict(type='integer'),
-    bbox_2d=dict(type='array', items=dict(type='integer', minimum=0, maximum=NORM), minItems=4, maxItems=4),
-    label=dict(type='string'),
-    description=dict(type='string')
-), required=['image_id', 'label', 'description']))
+The model was trained in the timeframe of January - April 2026. You can effectively perform tasks even beyond this range by accessing the web browser and using the latest information on the live web. But your knowledge cutoff is limited to early 2026, so you may not be aware of events or developments that occurred after that time, without explicitly browsing and searching for latest information on the web.
+
+This edition of the model was trained using SFT on top of Qwen3.5-9B, using a synthetic data mixture generated and developed by Microsoft AI Frontiers.'''
+
+FARA_CRITICAL = '''A critical point is a situation where we must pause and request information or confirmation from the user before proceeding. There are three types:
+
+Case 1: Missing User Information — The task requires personal information that the user has not provided (e.g., email, phone number, address, payment details). Never fabricate or assume personal information. Fill in only what the user has explicitly provided, then pause and ask for any missing required fields. (e.g., form requires phone number but user only gave name and email -> fill name and email, then ask for phone number.) If the user has provided all required information, proceed without stopping.
+
+Case 2: Underspecified Task — The task description is ambiguous or missing details needed to make a decision at the current step. Pause and ask for clarification. (e.g., user asks to book a flight but doesn't specify destination -> ask for destination.) If the user's instructions contain all information needed for the current decision, proceed without stopping.
+
+Case 3: Irreversible Action — We are about to perform an action that cannot be undone (e.g., submitting a form, completing a purchase, sending a message, deleting data). If the user explicitly authorized the action (e.g., "submit the form", "complete the purchase", "you have my permission to submit") -> proceed without stopping. If the user did NOT explicitly authorize the action -> stop and ask for confirmation. (e.g., "fill out a form" with no mention of submitting -> fill the form, then ask before submitting; "fill out and submit a form" -> fill and submit without stopping.)
+
+Only stop at a critical point if (1) required information is missing, (2) the task is ambiguous, OR (3) an irreversible action lacks explicit user authorization. If the user has provided all necessary information AND explicitly authorized the action, proceed without interruption.'''
+
+FARA_TOOL = dict(
+    name='computer_use',
+    description=f'''Use a mouse and keyboard to interact with a computer, and take screenshots.
+* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.
+* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots to see the results of your actions. E.g. if you click on Firefox and a window doesn't open, try wait and taking another screenshot.
+* The screen's resolution is {NORM}x{NORM}.
+* Whenever you intend to move the cursor to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.
+* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your cursor position so that the tip of the cursor visually falls on the element that you want to click.
+* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges.''',
+    parameters=dict(
+        properties=dict(
+            action=dict(type='string', description='The action to perform. The available actions are:\n* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order. Includes "Enter", "Alt", "Shift", "Tab", "Control", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Shift", etc.\n* `type`: Type a string of text on the keyboard.\n* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\n* `left_click`: Click the left mouse button.\n* `double_click`: Double-click the left mouse button.\n* `right_click`: Click the right mouse button.\n* `triple_click`: Triple-click the left mouse button (e.g. to select a line of text).\n* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\n* `scroll`: Performs a scroll of the mouse scroll wheel.\n* `hscroll`: Performs a horizontal scroll (mapped to regular scroll).\n* `visit_url`: Visit a specified URL.\n* `history_back`: Go back to the previous page in the browser history.\n* `web_search`: Perform a web search with a specified query.\n* `read_page_answer_question`: Read the current page content and answer a question about it.\n* `pause_and_memorize_fact`: Pause and memorize a fact for future reference.\n* `ask_user_question`: Ask the user a clarifying question and wait for a response.\n* `wait`: Wait specified seconds for the change to happen.\n* `terminate`: Terminate the current task and provide the final answer.', enum=['key','type','mouse_move','left_click','left_click_drag','right_click','double_click','triple_click','scroll','hscroll','visit_url','history_back','web_search','read_page_answer_question','pause_and_memorize_fact','ask_user_question','wait','terminate']),
+            keys=dict(type='array', description='Required only by `action=key`.'),
+            text=dict(type='string', description='Required only by `action=type`.'),
+            coordinate=dict(type='array', description='(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates to move the mouse to. Required by `action=left_click`, `action=double_click`, `action=right_click`, `action=triple_click`, `action=left_click_drag`, and `action=mouse_move`.'),
+            pixels=dict(type='number', description='The amount of scrolling to perform. Positive values scroll up, negative values scroll down. Required only by `action=scroll` and `action=hscroll`.'),
+            url=dict(type='string', description='The URL to visit. Required only by `action=visit_url`.'),
+            query=dict(type='string', description='The query to search for. Required only by `action=web_search`.'),
+            fact=dict(type='string', description='The fact to remember for the future. Required only by `action=pause_and_memorize_fact`.'),
+            question=dict(type='string', description='The question to ask. Required by `action=read_page_answer_question` and `action=ask_user_question`.'),
+            time=dict(type='number', description='The seconds to wait. Required only by `action=wait`.'),
+            answer=dict(type='string', description='The final answer for the task. Required only by `action=terminate`.')
+        ),
+        required=['action'],
+        type='object'
+    )
+)
+FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
 
 JEV_USAGE = 'Text only. --jev "NARRATIVE" "name?Claim" | "name?Q|a=Opt|b=Opt" | "name#Q|L1|L2". Multiple blocks. Jev never receives images.'
 CHANGE_APPROACH = 'This line of thought is not meaningful. Drop it and ask something else.'
 LAST = 'LAST RESULT'
 POWERSHELL = ['powershell.exe', '-NoProfile', '-Command']
-GESTURES = frozenset(('click', 'rclick', 'dclick', 'move', 'drag', 'scroll', 'key', 'wait', 'type', 'paste'))
+GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'key', 'wait', 'type', 'paste'))
 
 # --- Windows helpers (unchanged core) ---
 ULONG_PTR = ctypes.c_size_t
@@ -346,14 +383,98 @@ def log(kind, data):
     serve()
     for item in narrate(kind, data): mirror(append(render(item)))
 
-def fit(im, cap):
-    s = min(1, cap / max(im.size))
-    return im.resize((round(im.width*s), round(im.height*s)), Image.Resampling.LANCZOS) if s<1 else im
 def spot(bx):
     if not (isinstance(bx,(list,tuple)) and len(bx)==BOX_EDGES): raise ValueError('bad box')
     bx = [int(v) for v in bx]
     if not (0<=bx[0]<bx[2]<=NORM and 0<=bx[1]<bx[3]<=NORM): raise ValueError('box range')
     return bx, [(bx[0]+bx[2])//2, (bx[1]+bx[3])//2]
+
+def _by_factor(number, factor, how):
+    return int(how(number / factor) * factor)
+
+def fara_fit(im):
+    height, width = im.height, im.width
+    if max(height, width) / min(height, width) > 200: raise ValueError('bad image')
+    h_bar = max(FARA_FACTOR, _by_factor(height, FARA_FACTOR, round))
+    w_bar = max(FARA_FACTOR, _by_factor(width, FARA_FACTOR, round))
+    if h_bar * w_bar > FARA_MAX_PIXELS:
+        beta = math.sqrt((height * width) / FARA_MAX_PIXELS)
+        h_bar = max(FARA_FACTOR, _by_factor(height / beta, FARA_FACTOR, math.floor))
+        w_bar = max(FARA_FACTOR, _by_factor(width / beta, FARA_FACTOR, math.floor))
+    elif h_bar * w_bar < FARA_MIN_PIXELS:
+        beta = math.sqrt(FARA_MIN_PIXELS / (height * width))
+        h_bar = _by_factor(height * beta, FARA_FACTOR, math.ceil)
+        w_bar = _by_factor(width * beta, FARA_FACTOR, math.ceil)
+    return im if (im.width, im.height) == (w_bar, h_bar) else im.resize((w_bar, h_bar), Image.Resampling.LANCZOS)
+
+def fara_call(raw):
+    parts = raw.split('<tool_call>\n', 1)
+    if len(parts) != 2 or '\n</tool_call>' not in parts[1]: raise ValueError('Fara tool_call expected')
+    thoughts, action_text = parts[0].strip(), parts[1].split('\n</tool_call>', 1)[0]
+    try: call = json.loads(action_text)
+    except json.JSONDecodeError: call = ast.literal_eval(action_text)
+    if not isinstance(call, dict) or call.get('name') != 'computer_use' or not isinstance(call.get('arguments'), dict): raise ValueError('Fara tool_call expected')
+    return thoughts, call
+
+def fara_point(arguments):
+    if 'coordinate' not in arguments: return None
+    xy = arguments['coordinate']
+    if not (isinstance(xy, (list, tuple)) and len(xy) == PAIR): raise ValueError('bad box')
+    x, y = int(xy[0]), int(xy[1])
+    if not (0 <= x <= NORM and 0 <= y <= NORM): raise ValueError('box range')
+    return x, y
+
+FARA_KEY = dict(control='ctrl', ctrl='ctrl', shift='shift', alt='alt', meta='win', win='win', enter='enter', escape='esc', esc='esc', tab='tab', backspace='backspace', delete='del', arrowup='up', arrowdown='down', arrowleft='left', arrowright='right', up='up', down='down', left='left', right='right', pageup='pageup', pagedown='pagedown', space='space', home='home', end='end', insert='insert')
+FARA_KEY['return'] = 'enter'
+FARA_KEY['del'] = 'del'
+
+def fara_keys(names):
+    out = []
+    for name in names:
+        key = FARA_KEY.get(str(name).strip().lower())
+        if key is None and len(str(name)) == 1: key = str(name).lower()
+        if key is None: raise ValueError(f'unknown {name}')
+        out.append(key)
+    if not out: raise ValueError('unknown key')
+    return 'key ' + '+'.join(out)
+
+def fara_notches(pixels, view):
+    pixels = int(pixels or 0)
+    if not pixels: return 0
+    notches = int(round(pixels * view / NORM / FARA_WHEEL))
+    return notches or (1 if pixels > 0 else -1)
+
+def fara_open(url):
+    url = str(url or '')
+    if url.startswith(('https://', 'http://', 'file://', 'about:')): target = url
+    elif ' ' in url: target = 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(url) + '&FORM=QBLH'
+    else: target = 'https://' + url
+    return 'key ctrl+l\ntype ' + target + '\nkey enter'
+
+def fara_program(arguments):
+    action = arguments.get('action')
+    point = fara_point(arguments)
+    if action in ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag') and point is None: raise ValueError('bad box')
+    if action == 'left_click': return f'click {point[0]} {point[1]}'
+    if action == 'double_click': return f'dclick {point[0]} {point[1]}'
+    if action == 'right_click': return f'rclick {point[0]} {point[1]}'
+    if action == 'triple_click': return f'tclick {point[0]} {point[1]}'
+    if action == 'mouse_move': return f'move {point[0]} {point[1]}'
+    if action == 'left_click_drag': return f"x, y = desktop.position()\ndesktop.drag([(x, y), ({point[0]}, {point[1]})])"
+    if action == 'type': return 'type ' + str(arguments.get('text', ''))
+    if action == 'key': return fara_keys(arguments.get('keys') or [])
+    if action == 'scroll':
+        notches = fara_notches(arguments.get('pixels'), FARA_VIEW_H)
+        if not notches: return ''
+        return f'scroll {notches}' + (f' {point[0]} {point[1]}' if point else '')
+    if action == 'hscroll':
+        notches = fara_notches(arguments.get('pixels'), FARA_VIEW_W)
+        return f'scroll {notches}' if notches else ''
+    if action == 'wait': return f'wait {arguments.get("time") or 0}'
+    if action == 'history_back': return 'key alt+left'
+    if action == 'visit_url': return fara_open(arguments.get('url'))
+    if action == 'web_search': return fara_open('https://www.bing.com/search?q=' + urllib.parse.quote_plus(str(arguments.get('query') or '')) + '&FORM=QBLH')
+    return ''
 
 def questions(blocks):
     q = {}
@@ -400,14 +521,15 @@ class Oracle:
 
 class Vision(Oracle):
     headers = {}
-    def ask(self, question, image, origin):
-        messages = [dict(role='system', content=RETINA_SYSTEM), dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=question)])]
-        payload = dict(model=VISION_MODEL, chat_template_kwargs=dict(enable_thinking=False), temperature=RETINA_TEMPERATURE, top_k=RETINA_TOP_K, repeat_penalty=RETINA_REPEAT_PENALTY, messages=messages, response_format=dict(type='json_schema', json_schema=dict(name='r', schema=RETINA_SCHEMA)))
-        raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', self.post(payload, dict(question=question, image=origin, sent_size=list(image.size)))['choices'][0]['message']['content'].strip())
-        data = json.loads(raw)
-        if isinstance(data, dict): data = next((data[k] for k in ('elements','objects') if isinstance(data.get(k), list)), [])
-        if not isinstance(data, list): raise ValueError('Retina list expected')
-        return data
+    def ask(self, text, image, origin, prior):
+        messages = [dict(role='system', content=FARA_SYSTEM), *prior, dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=text)])]
+        message = self.post(dict(model=VISION_MODEL, temperature=RETINA_TEMPERATURE, chat_template_kwargs=dict(enable_thinking=False), messages=messages), dict(question=text, image=origin, sent_size=list(image.size), prior=len(prior)))['choices'][0]['message']
+        content = (message.get('content') or '').strip()
+        reasoning = (message.get('reasoning_content') or '').strip()
+        # Qwen keeps reasoning_content off historical assistant turns. Fara's next request must still contain that thought, so it is stored inside the assistant content, ahead of the tool call.
+        if reasoning and reasoning not in content: content = f'{reasoning}\n{content}'.strip()
+        if not content: raise ValueError('Fara tool_call expected')
+        return content
 
 class Decision(Oracle):
     # TEXT ONLY — no images ever sent
@@ -431,6 +553,8 @@ class Hand:
         pair = self._pair(x, y)
         if button=='right': self.w._do_right_click(pair, self.region)
         elif clicks==DOUBLE_CLICKS: self.w._do_double_click(pair, self.region)
+        elif clicks>DOUBLE_CLICKS:
+            for _ in range(clicks): self.w._do_click(pair, self.region)
         else: self.w._do_click(pair, self.region)
         return dict(clicked=[int(round(float(x))), int(round(float(y)))], button=button, clicks=clicks)
     def rightClick(self, x, y): return self.click(x, y, 'right')
@@ -472,7 +596,7 @@ class Engine:
         self.work.mkdir(parents=True, exist_ok=True)
         os.chdir(self.work)
         if fresh:
-            for f in (self.story_path, self.edit_log, self.goal, self.result, self.continuation, self.sentinel, Path('look.json'), Path('region.txt')):
+            for f in (self.story_path, self.edit_log, self.goal, self.result, self.continuation, self.sentinel, Path('look.json'), Path('fara.json'), Path('region.txt')):
                 f.unlink(missing_ok=True)
         self.story_path.touch()
         self.edit_log.touch()
@@ -502,16 +626,44 @@ class Engine:
         v = dict(id=sid, image=str(path), size=size, region=region, at=round(time.time(), CLOCK_PLACES))
         write('screen.json', v); return v
 
-    def retina(self, question):
+    def _fara(self):
+        path = self.work / 'fara.json'
+        return read(path) if path.exists() else dict(task='', awaiting_user=False, turns=[])
+
+    def _prior(self, state):
+        users = [i for i, turn in enumerate(state['turns']) if turn['role'] == 'user' and turn.get('image')]
+        keep = set(users[-(FARA_IMAGES - 1):])
+        messages = []
+        for i, turn in enumerate(state['turns']):
+            if turn['role'] == 'assistant':
+                # Full previous reply: the thought, then the tool call. Do not send reasoning_content; the Qwen template drops it before the latest user turn.
+                messages.append(dict(role='assistant', content=turn['text']))
+                continue
+            content = []
+            if i in keep:
+                with Image.open(turn['image']) as im: content.append(dict(type='image_url', image_url=dict(url=b64(fara_fit(im.convert('RGB'))))))
+            content.append(dict(type='text', text=turn['text']))
+            messages.append(dict(role='user', content=content))
+        return messages
+
+    def retina(self, question=''):
         screen = self.screen
-        with Image.open(screen['image']) as im:
-            found = self.vision.ask(question, fit(im.convert('RGB'), RETINA_LONG_SIDE), screen['image'])
-        elements = []
-        for item in found:
-            if not isinstance(item, dict): continue
-            box, center = spot(item['bbox_2d']) if 'bbox_2d' in item else (None, None)
-            elements.append(dict(label=str(item.get('label') or ''), description=str(item.get('description') or ''), box=box, center=center))
-        v = dict(capture=screen['id'], region=screen['region'], question=question, elements=elements)
+        state = self._fara()
+        if not state['turns']:
+            if not str(question).strip(): raise ValueError('Fara task required')
+            text, state['task'] = str(question).strip(), str(question).strip()
+        elif state.get('awaiting_user') and str(question).strip(): text = str(question).strip()
+        else: text = FARA_NEXT
+        with Image.open(screen['image']) as im: image = fara_fit(im.convert('RGB'))
+        raw = self.vision.ask(text, image, screen['image'], self._prior(state))
+        thoughts, call = fara_call(raw)
+        arguments = call['arguments']
+        state['turns'] += [dict(role='user', text=text, image=screen['image']), dict(role='assistant', text=raw)]
+        state['awaiting_user'] = arguments.get('action') == 'ask_user_question'
+        write(self.work / 'fara.json', state)
+        point = fara_point(arguments)
+        program = fara_program(arguments)
+        v = dict(capture=screen['id'], region=screen['region'], task=state['task'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=program)
         write('look.json', v); return v
 
     def jev(self, narrative, *blocks):
@@ -544,6 +696,10 @@ class Engine:
                 elif verb=='wait': time.sleep(max(0, float(rest)))
                 elif verb=='scroll':
                     n, *at = rest.split(); d.scroll(int(n), *map(float, at))
+                elif verb=='tclick':
+                    nums = list(map(float, rest.split()))
+                    if len(nums)!=PAIR: raise ValueError(f'{verb} needs 0-{NORM} pairs')
+                    d.click(*nums, clicks=3)
                 elif verb in ('click','rclick','dclick','move','drag'):
                     nums = list(map(float, rest.split()))
                     if len(nums)%PAIR or (len(nums)<DRAG_MIN_POINTS*PAIR if verb=='drag' else len(nums)!=PAIR): raise ValueError(f'{verb} needs 0-{NORM} pairs')
@@ -555,8 +711,9 @@ class Engine:
         d = self.desktop
         with ExitStack() as stack, redirect_stdout(io.StringIO()) as out:
             stack.callback(d.release)
-            if src.split(None,1)[0] in GESTURES: self._gestures(src)
-            else: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
+            head = src.split(None, 1)[0] if src.strip() else ''
+            if head in GESTURES: self._gestures(src)
+            elif head: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
         time.sleep(SCREENSHOT_DELAY)
         v = self.capture() | dict(stdout=out.getvalue())
         write('screen.json', v); return v
@@ -628,7 +785,7 @@ class Engine:
 
 # Docstrings for tools (agent sees these)
 Engine.region.__doc__ = f'$CALL --region : select rectangle. 0–{NORM} scale for eye and hand. Right-click = full screen. Escape cancels.'
-Engine.retina.__doc__ = f'$CALL --retina "QUESTION" : ask Retina about latest capture. Question verbatim. Boxes 0–{NORM}. You choose whether to ask.'
+Engine.retina.__doc__ = f'$CALL --retina "TASK" : first call is the Fara task. Later calls resend every previous Fara thought and tool call with the new screenshot. A later argument is used only as the reply when Fara asked a question. Coordinates 0–{NORM}. Run the returned program with --hands.'
 Engine.hands.__doc__ = f'$CALL --hands "PROGRAM" : gestures or Python. Coordinates 0–{NORM}. Screenshot after whole program. Skills can be written here or by editing source.'
 Engine.story.__doc__ = '$CALL --story "TEXT" : write the living narrative exactly. Primary continuity for next wake. Dilution happens by rewriting shorter.'
 Engine.rewrite.__doc__ = '$CALL --rewrite : invitation to dilute. You may ignore, rewrite via --story, or do nothing.'
