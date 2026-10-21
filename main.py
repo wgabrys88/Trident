@@ -56,8 +56,6 @@ FARA_MIN_PIXELS = 1024 * FARA_FACTOR ** 2
 FARA_MAX_PIXELS = 4096 * FARA_FACTOR ** 2
 FARA_IMAGES = 3
 FARA_NEXT = 'Here is the next screenshot. Think about what to do next.'
-FARA_VIEW_H, FARA_VIEW_W = 900, 1440
-FARA_WHEEL = 100
 CAPTURE_SCALE = 1.0
 CAPTURE_NATIVE = 0
 DPI_AWARENESS = 2
@@ -183,7 +181,7 @@ JEV_USAGE = 'Text only. --jev "NARRATIVE" "name?Claim" | "name?Q|a=Opt|b=Opt" | 
 CHANGE_APPROACH = 'This line of thought is not meaningful. Drop it and ask something else.'
 LAST = 'LAST RESULT'
 POWERSHELL = ['powershell.exe', '-NoProfile', '-Command']
-GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'key', 'wait', 'type', 'paste'))
+GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
 
 # --- Windows helpers (unchanged core) ---
 ULONG_PTR = ctypes.c_size_t
@@ -490,11 +488,10 @@ def fara_keys(names):
     if not out: raise ValueError('unknown key')
     return 'key ' + '+'.join(out)
 
-def fara_notches(pixels, view):
-    pixels = int(pixels or 0)
-    if not pixels: return 0
-    notches = int(round(pixels * view / NORM / FARA_WHEEL))
-    return notches or (1 if pixels > 0 else -1)
+def fara_wheel(pixels, span):
+    pixels, span = int(pixels or 0), int(span or 0)
+    if not pixels or span <= 0: return 0
+    return int(pixels * span / NORM)
 
 def fara_open(url):
     url = str(url or '')
@@ -503,7 +500,7 @@ def fara_open(url):
     else: target = 'https://' + url
     return 'key ctrl+l\ntype ' + target + '\nkey enter'
 
-def fara_program(arguments):
+def fara_program(arguments, size=(0, 0)):
     action = arguments.get('action')
     point = fara_point(arguments)
     if action in ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag') and point is None: raise ValueError('bad box')
@@ -515,13 +512,15 @@ def fara_program(arguments):
     if action == 'left_click_drag': return f"x, y = desktop.position()\ndesktop.drag([(x, y), ({point[0]}, {point[1]})])"
     if action == 'type': return 'type ' + str(arguments.get('text', ''))
     if action == 'key': return fara_keys(arguments.get('keys') or [])
+    width, height = (list(size) + [0, 0])[:2]
     if action == 'scroll':
-        notches = fara_notches(arguments.get('pixels'), FARA_VIEW_H)
-        if not notches: return ''
-        return f'scroll {notches}' + (f' {point[0]} {point[1]}' if point else '')
+        amount = fara_wheel(arguments.get('pixels'), height)
+        if not amount: return ''
+        return f'wheel {amount}' + (f' {point[0]} {point[1]}' if point else '')
     if action == 'hscroll':
-        notches = fara_notches(arguments.get('pixels'), FARA_VIEW_W)
-        return f'scroll {notches}' if notches else ''
+        amount = fara_wheel(arguments.get('pixels'), width)
+        if not amount: return ''
+        return f'hwheel {amount}' + (f' {point[0]} {point[1]}' if point else '')
     if action == 'wait': return f'wait {arguments.get("time") or 0}'
     if action == 'history_back': return 'key alt+left'
     if action == 'visit_url': return fara_open(arguments.get('url'))
@@ -627,6 +626,9 @@ class Hand:
     def scroll(self, clicks, x=None, y=None):
         if x is None: x, y = self.position()
         n = int(clicks); self.w._do_scroll(self._pair(x,y), self.region, SCROLL_UP if n>0 else -SCROLL_UP, abs(n)); return dict(scrolled=n)
+    def wheel(self, amount, x=None, y=None, horizontal=False):
+        if x is None: x, y = self.position()
+        self.w._do_wheel(self._pair(x, y), self.region, int(amount), horizontal); return dict(wheel=int(amount), horizontal=horizontal)
     def release(self): return None
 
 @dataclass
@@ -715,9 +717,10 @@ class Engine:
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         state['turns'] += [dict(role='user', text=text, image=screen['image']), dict(role='assistant', text=raw)]
         state['awaiting_user'] = arguments.get('action') == 'ask_user_question'
+        if arguments.get('action') == 'pause_and_memorize_fact': state.setdefault('facts', []).append(str(arguments.get('fact') or ''))
         write(self.work / 'fara.json', state)
         point = fara_point(arguments)
-        program = fara_program(arguments)
+        program = fara_program(arguments, screen.get('size') or (0, 0))
         v = dict(capture=screen['id'], region=screen['region'], task=state['task'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=program)
         write('look.json', v); return v
 
@@ -751,6 +754,8 @@ class Engine:
                 elif verb=='wait': time.sleep(max(0, float(rest)))
                 elif verb=='scroll':
                     n, *at = rest.split(); d.scroll(int(n), *map(float, at))
+                elif verb in ('wheel', 'hwheel'):
+                    n, *at = rest.split(); d.wheel(int(n), *map(float, at), horizontal=verb=='hwheel')
                 elif verb=='tclick':
                     nums = list(map(float, rest.split()))
                     if len(nums)!=PAIR: raise ValueError(f'{verb} needs 0-{NORM} pairs')

@@ -39,7 +39,7 @@ def foreground(class_name):
         return True
     user32.EnumWindows(proto(each), 0)
     if not found: return
-    hwnd = next((h for h, title in found if 'chess' in title.lower()), found[0][0])
+    hwnd = found[0][0]
     user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
     user32.SetForegroundWindow(hwnd)
 
@@ -88,7 +88,8 @@ def loop():
     work = Path(args.work).resolve()
     work.mkdir(parents=True, exist_ok=True)
     region = work / 'region.txt'
-    if not region.exists() or not region.read_text('utf-8').strip(): region.write_text('NONE', encoding='utf-8')
+    if not region.exists() or not region.read_text('utf-8').strip():
+        if child(work, '--region').returncode: return
     (work / 'goal.txt').write_text(args.goal, encoding='utf-8')
     state = fara(work)
     run = work / 'runs' / time.strftime('goal_%Y%m%d_%H%M%S')

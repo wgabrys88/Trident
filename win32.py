@@ -36,6 +36,7 @@ class Win32Constants:
     right_down: int = 0x0008
     right_up: int = 0x0010
     mouse_wheel: int = 0x0800
+    mouse_hwheel: int = 0x1000
     wheel_delta: int = 120
     keyeventf_keyup: int = 0x0002
     keyeventf_extended: int = 0x0001
@@ -556,13 +557,26 @@ def _do_hotkey(keys_str: str) -> None:
 
 
 def _do_scroll(pos_str: str, region_str: str, direction: int, clicks: int) -> None:
+    if clicks <= 0:
+        return
     norm_x, norm_y = _parse_pos(pos_str)
     pixel_x, pixel_y = _resolve_screen_pos(norm_x, norm_y, region_str)
     _move_cursor(pixel_x, pixel_y)
     time.sleep(CFG.click_settle_delay)
-    for _ in range(max(1, clicks)):
+    for _ in range(clicks):
         _mouse_event(K.mouse_wheel, direction * K.wheel_delta)
         time.sleep(CFG.scroll_click_delay)
+
+
+def _do_wheel(pos_str: str, region_str: str, amount: int, horizontal: bool = False) -> None:
+    amount = int(amount)
+    if not amount:
+        return
+    norm_x, norm_y = _parse_pos(pos_str)
+    pixel_x, pixel_y = _resolve_screen_pos(norm_x, norm_y, region_str)
+    _move_cursor(pixel_x, pixel_y)
+    time.sleep(CFG.click_settle_delay)
+    _mouse_event(K.mouse_hwheel if horizontal else K.mouse_wheel, amount)
 
 
 def _do_drag(from_pos_str: str, to_pos_str: str, region_str: str) -> None:
