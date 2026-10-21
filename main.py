@@ -4,6 +4,7 @@ Trident — Living Organism
 Non-defined topology. Self-deciding. May not perform requested tasks.
 Narrative is the body of continuity. Skills are code. Dilution is natural.
 Jev sees text only.
+Retina is Fara on llama.cpp at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
 import argparse, atexit, base64, ctypes, io, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid, win32job
@@ -20,18 +21,18 @@ ROOT = SCRIPT.parent
 PYTHON = Path(sys.executable)
 E = os.environ.get
 
-# --- Configurable models ---
-# Main agent: local LM Studio (OpenAI-compatible) or external. Default expects local Gemma abliterated.
-AGENT_BASE = E('TRIDENT_AGENT_BASE', 'http://localhost:1234/v1')
-AGENT_MODEL = E('TRIDENT_AGENT_MODEL', 'huihui-gemma-3n-e4b-it-abliterated')  # or whatever LM Studio shows
-AGENT_KEY = E('TRIDENT_AGENT_KEY', 'lm-studio')
+# --- Organs ---
+# This file is the toolbox. It does not call the brain. The laptop
+# (192.168.16.45) driver does, through OpenRouter, model TRIDENT_BRAIN_MODEL.
+# Retina is Fara1.5-4B served by llama.cpp on this NVIDIA PC (192.168.16.31).
+# The server alias is fara-1.5-4b,retina, so the chat model name is retina.
+# Jev is text-only. Images are never sent to it.
 
-# Jev: text-only structured decisions (images deliberately not sent)
+NVIDIA_HOST = '192.168.16.31'
 DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14')
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
-
-# Retina: local vision
-VISION_URL = E('TRIDENT_VISION_URL', 'http://192.168.16.31:1234')
+VISION_URL = E('TRIDENT_VISION_URL', f'http://{NVIDIA_HOST}:1234')
+VISION_MODEL = E('TRIDENT_VISION_MODEL', 'retina')
 
 RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.md')
 if sys.stdout.isatty():
@@ -400,7 +401,7 @@ class Vision(Oracle):
     headers = {}
     def ask(self, question, image, origin):
         messages = [dict(role='system', content=RETINA_SYSTEM), dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=question)])]
-        payload = dict(model='retina', chat_template_kwargs=dict(enable_thinking=False), temperature=RETINA_TEMPERATURE, top_k=RETINA_TOP_K, repeat_penalty=RETINA_REPEAT_PENALTY, messages=messages, response_format=dict(type='json_schema', json_schema=dict(name='r', schema=RETINA_SCHEMA)))
+        payload = dict(model=VISION_MODEL, chat_template_kwargs=dict(enable_thinking=False), temperature=RETINA_TEMPERATURE, top_k=RETINA_TOP_K, repeat_penalty=RETINA_REPEAT_PENALTY, messages=messages, response_format=dict(type='json_schema', json_schema=dict(name='r', schema=RETINA_SCHEMA)))
         raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', self.post(payload, dict(question=question, image=origin, sent_size=list(image.size)))['choices'][0]['message']['content'].strip())
         data = json.loads(raw)
         if isinstance(data, dict): data = next((data[k] for k in ('elements','objects') if isinstance(data.get(k), list)), [])
@@ -590,8 +591,8 @@ class Engine:
         runtime = dict(
             script=str(SCRIPT), python=str(PYTHON), work=str(self.work),
             journal=str(RUN), story=str(self.story_path), edit_log=str(self.edit_log),
-            agent_base=AGENT_BASE, agent_model=AGENT_MODEL,
-            decision_model=DECISION_MODEL, vision_url=VISION_URL,
+            decision_model=DECISION_MODEL,
+            vision_url=VISION_URL, vision_model=VISION_MODEL,
             region=chosen.get('region','none'),
             note='You decide what to do. Narrative is primary. Skills are code. May rest or refuse.'
         )
@@ -607,8 +608,7 @@ class Engine:
             self.edit_log.read_text('utf-8')[-2000:] or '(none)',
             LAST, self.result.read_text('utf-8')
         ))
-        # For local LM Studio agent (OpenAI-compatible)
-        # In practice the outer runner (Cursor or LM Studio chat) drives this; this method prepares the prompt.
+        # The laptop driver owns the brain call. This method only writes the prompt.
         text(self.work / 'prompt.txt', prompt)
         return dict(prompt_prepared=True, length=len(prompt), note='Agent decides next action. No forced composer loop.')
 
