@@ -4,7 +4,7 @@ Trident — Living Organism
 Non-defined topology. Self-deciding. May not perform requested tasks.
 Narrative is the body of continuity. Skills are code. Dilution is natural.
 Jev sees text only.
-Retina is Fara on llama.cpp at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
+Retina is Fara on llama.cpp CUDA 12.4 at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
 import argparse, atexit, base64, ctypes, io, json, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.request, uuid, win32job
@@ -24,7 +24,8 @@ E = os.environ.get
 # --- Organs ---
 # This file is the toolbox. It does not call the brain. The laptop
 # (192.168.16.45) driver does, through OpenRouter, model TRIDENT_BRAIN_MODEL.
-# Retina is Fara1.5-4B served by llama.cpp on this NVIDIA PC (192.168.16.31).
+# Retina is Fara1.5-4B on llama.cpp b11756 CUDA 12.4 on this NVIDIA PC
+# (192.168.16.31, GTX 1060). The projector is mmproj-Fara1.5-4B-Q8_0.
 # The server alias is fara-1.5-4b,retina, so the chat model name is retina.
 # Jev is text-only. Images are never sent to it.
 
