@@ -7,7 +7,7 @@ Jev sees text only.
 Retina is Fara on llama.cpp CUDA 12.4 at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
-import argparse, ast, atexit, base64, ctypes, io, json, math, os, re, signal, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request, uuid, win32job
+import argparse, ast, atexit, base64, ctypes, io, json, math, os, re, signal, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid, win32job
 from contextlib import ExitStack, redirect_stdout
 from ctypes import wintypes
 from dataclasses import InitVar, dataclass
@@ -63,9 +63,9 @@ CAPTURE_NATIVE = 0
 DPI_AWARENESS = 2
 JOURNAL_HOST = '0.0.0.0'
 JOURNAL_PORT = 8765
-JOURNAL_POLL_MS = 3000
-JOURNAL_SCROLL = 10 ** 9
+JOURNAL_TICK = 0.4
 JOURNAL_RULE = 72
+DETACHED = 0x00000008 | 0x00000200 | 0x08000000
 HALT_POLL = 0.1
 FOLLOW_POLL = 1
 CLOCK_PLACES = 3
@@ -119,8 +119,7 @@ You may consult Jev (text only) about whether a shorter story still supports the
 Jev never sees images. His numbers are evidence, never orders.
 
 YOUR EYE
-Retina is Fara. The first --retina "TASK" is the whole task. Each later look sends the new screenshot and the full text of every previous Fara reply, thoughts included, then the tool call. Do not rephrase the task on later looks. If Fara asked you a question, the next --retina "ANSWER" is that reply. Otherwise call --retina with no extra text.
-Fara returns one computer_use action. Coordinates are 0–{NORM}. Run the returned program with --hands, then look again.
+Retina is Fara. The first --retina text is the task. Every later look sends the new screenshot and the full text of every previous Fara reply, the thought and then the tool call. Text you add on a later look is sent with that screenshot. When Fara has asked a question, that text is your answer. Coordinates are 0–{NORM}. The reply carries a program. --hands can run it. You may run it, change it, look again, or do something else.
 
 YOUR HAND
 Coordinates 0–{NORM} inside the selected rectangle. win32.py is the hand.
@@ -208,7 +207,7 @@ def text(p, v):
     t = p.with_name(p.name + '.' + uuid.uuid4().hex + '.pending')
     t.write_bytes(v.encode('utf-8'))
     t.replace(p)
-    log('file', dict(path=str(p), text=v[:500] + ('...' if len(v)>500 else '')))
+    log('file', dict(path=str(p), text=v))
 
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
@@ -356,29 +355,82 @@ def mirror(blob):
         try: _xfer(K32.WriteFile, h, blob)
         finally: K32.CloseHandle(h)
     finally: K32.FreeConsole()
-def serve():
-    if getattr(serve, 'on', False): return
-    serve.on = True
+def _journal_target():
+    pointer = ROOT / 'journal.path'
     try:
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-        page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font-family:monospace"></pre><script>async function g(){try{const r=await fetch("/md",{cache:"no-store"});document.getElementById("t").textContent=await r.text();scrollTo(0,' + str(JOURNAL_SCROLL).encode() + b')}catch(e){}}setInterval(g,' + str(JOURNAL_POLL_MS).encode() + b');g()</script>'
-        class H(BaseHTTPRequestHandler):
-            def log_message(self, *_): pass
-            def do_GET(self):
-                path = self.path.split('?', 1)[0]
-                if path == '/md':
-                    try: body = RUN.read_bytes()
-                    except OSError: body = b''
-                    self.send_response(200); self.send_header('Content-Type', 'text/plain; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
-                if path in ('/', '/index.html'):
-                    self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(page))); self.end_headers(); self.wfile.write(page); return
-                self.send_error(404)
-        def run():
-            try: ThreadingHTTPServer((JOURNAL_HOST, JOURNAL_PORT), H).serve_forever()
-            except OSError: pass
-        threading.Thread(target=run, daemon=True).start()
-    except Exception:
+        target = Path(pointer.read_text('utf-8').strip())
+        if str(target): return target
+    except OSError:
+        pass
+    return RUN
+
+def _port_open():
+    try:
+        with socket.create_connection(('127.0.0.1', JOURNAL_PORT), 0.3): return True
+    except OSError:
+        return False
+
+def serve():
+    # The tool process exits. The listener stays, on every interface, so a phone can keep the stream.
+    (ROOT / 'journal.path').write_text(str(RUN), encoding='utf-8')
+    if _port_open(): return
+    try:
+        subprocess.Popen([str(PYTHON), '-u', '-B', '-X', 'utf8', str(SCRIPT), '--journal'], cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACHED, close_fds=True)
+    except OSError:
         return
+
+def journal_serve():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>trident</title><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font-family:monospace"></pre><script>var t=document.getElementById("t"),es=new EventSource("/events");function z(){scrollTo(0,1e9)}es.addEventListener("reset",function(e){t.textContent=e.data;z()});es.addEventListener("more",function(e){t.textContent+=e.data;z()})</script>'
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *_): pass
+        def _head(self, code, ctype, length=None):
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            if length is not None: self.send_header('Content-Length', str(length))
+            self.end_headers()
+        def _event(self, name, payload):
+            text = payload.decode('utf-8', 'replace') if isinstance(payload, (bytes, bytearray)) else payload
+            self.wfile.write(('event: %s\n' % name + ''.join('data: %s\n' % line for line in text.split('\n')) + '\n').encode())
+            self.wfile.flush()
+        def do_GET(self):
+            path = self.path.split('?', 1)[0]
+            if path == '/md':
+                try: body = _journal_target().read_bytes()
+                except OSError: body = b''
+                self._head(200, 'text/plain; charset=utf-8', len(body)); self.wfile.write(body); return
+            if path == '/events':
+                self._head(200, 'text/event-stream; charset=utf-8')
+                seen, current = -1, None
+                try:
+                    while True:
+                        target = _journal_target()
+                        try: size = target.stat().st_size
+                        except OSError: size = 0
+                        key = str(target)
+                        if key != current or size < seen or seen < 0:
+                            try: data = target.read_bytes()
+                            except OSError: data = b''
+                            current, seen = key, 0
+                            self._event('reset', data)
+                            seen = len(data)
+                        elif size > seen:
+                            try: data = target.read_bytes()
+                            except OSError: data = b''
+                            self._event('more', data[seen:]); seen = len(data)
+                        time.sleep(JOURNAL_TICK)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                    return
+            if path in ('/', '/index.html'):
+                self._head(200, 'text/html; charset=utf-8', len(page)); self.wfile.write(page); return
+            self.send_error(404)
+    class Server(ThreadingHTTPServer):
+        allow_reuse_address = True
+    try: httpd = Server((JOURNAL_HOST, JOURNAL_PORT), H)
+    except OSError: return
+    httpd.serve_forever()
 def log(kind, data):
     serve()
     for item in narrate(kind, data): mirror(append(render(item)))
@@ -653,7 +705,9 @@ class Engine:
             if not str(question).strip(): raise ValueError('Fara task required')
             text, state['task'] = str(question).strip(), str(question).strip()
         elif state.get('awaiting_user') and str(question).strip(): text = str(question).strip()
-        else: text = FARA_NEXT
+        else:
+            note = str(question).strip()
+            text = f'{note}\n{FARA_NEXT}' if note else FARA_NEXT
         with Image.open(screen['image']) as im: image = fara_fit(im.convert('RGB'))
         raw = self.vision.ask(text, image, screen['image'], self._prior(state))
         thoughts, call = fara_call(raw)
@@ -785,7 +839,7 @@ class Engine:
 
 # Docstrings for tools (agent sees these)
 Engine.region.__doc__ = f'$CALL --region : select rectangle. 0–{NORM} scale for eye and hand. Right-click = full screen. Escape cancels.'
-Engine.retina.__doc__ = f'$CALL --retina "TASK" : first call is the Fara task. Later calls resend every previous Fara thought and tool call with the new screenshot. A later argument is used only as the reply when Fara asked a question. Coordinates 0–{NORM}. Run the returned program with --hands.'
+Engine.retina.__doc__ = f'$CALL --retina "TEXT" : first text is the task. Every later look resends each previous Fara reply, the thought and then the tool call, with the new screenshot. Text you add is sent too. When Fara asked a question, that text is your answer. Coordinates 0–{NORM}. The program in the result is yours to run, change, or leave.'
 Engine.hands.__doc__ = f'$CALL --hands "PROGRAM" : gestures or Python. Coordinates 0–{NORM}. Screenshot after whole program. Skills can be written here or by editing source.'
 Engine.story.__doc__ = '$CALL --story "TEXT" : write the living narrative exactly. Primary continuity for next wake. Dilution happens by rewriting shorter.'
 Engine.rewrite.__doc__ = '$CALL --rewrite : invitation to dilute. You may ignore, rewrite via --story, or do nothing.'
@@ -819,10 +873,13 @@ def main():
     parser = argparse.ArgumentParser(add_help=False)
     group = parser.add_mutually_exclusive_group()
     for name in FLAGS: group.add_argument('--' + name, dest='entry', action='store_const', const=name)
-    for flag in ('--chain', '--fresh'): parser.add_argument(flag, action='store_true')
+    for flag in ('--chain', '--fresh', '--journal'): parser.add_argument(flag, action='store_true')
     parser.add_argument('--work', default=str(ROOT))
     parser.add_argument('args', nargs='*')
     a = parser.parse_args()
+    if a.journal:
+        journal_serve()
+        return
     if not a.entry and not a.chain: parser.error('need a tool flag or --chain')
     serve()
     started, engine = time.time(), None
