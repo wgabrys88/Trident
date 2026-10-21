@@ -886,6 +886,13 @@ def main():
     if a.journal:
         journal_serve()
         return
+    if not a.entry and not a.chain and not a.fresh and len(a.args) == 1 and a.work == str(ROOT):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('goal_loop', ROOT / 'goal-loop.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.loop(a.args[0])
+        return
     if not a.entry and not a.chain: parser.error('need a tool flag or --chain')
     serve()
     started, engine = time.time(), None
