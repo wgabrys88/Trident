@@ -2,4 +2,5 @@
 !/main.py
 !/win32.py
 !/.gitignore
+!/goal-loop.py
 
