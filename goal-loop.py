@@ -12,12 +12,18 @@ import main
 
 ROOT = Path(__file__).resolve().parent
 CREATE_NO_WINDOW = 0x08000000
-SW_HIDE, SW_MAXIMIZE = 0, 3
+SW_HIDE, SW_SHOW, SW_RESTORE = 0, 5, 9
 STOP_ACTIONS = frozenset(('terminate', 'ask_user_question'))
+SETTLE = 3
 
 def hide():
     hwnd = ctypes.windll.kernel32.GetConsoleWindow()
     if hwnd: ctypes.windll.user32.ShowWindow(hwnd, SW_HIDE)
+
+def plain(text):
+    text = str(text).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in '"\'': return text[1:-1].strip()
+    return text
 
 def foreground(class_name):
     user32 = ctypes.windll.user32
@@ -26,12 +32,16 @@ def foreground(class_name):
     def each(hwnd, _):
         buf = ctypes.create_unicode_buffer(256)
         user32.GetClassNameW(hwnd, buf, 256)
-        if buf.value == class_name and user32.IsWindowVisible(hwnd): found.append(hwnd)
+        if buf.value != class_name or not user32.IsWindowVisible(hwnd): return True
+        title = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, title, 512)
+        found.append((hwnd, title.value))
         return True
     user32.EnumWindows(proto(each), 0)
     if not found: return
-    user32.ShowWindow(found[0], SW_MAXIMIZE)
-    user32.SetForegroundWindow(found[0])
+    hwnd = next((h for h, title in found if 'chess' in title.lower()), found[0][0])
+    user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
+    user32.SetForegroundWindow(hwnd)
 
 def child(work, *args):
     return subprocess.run(
@@ -73,10 +83,12 @@ def loop():
     parser.add_argument('--steps', type=int, default=60)
     parser.add_argument('--minutes', type=int, default=20)
     args = parser.parse_args()
+    args.goal = plain(args.goal)
     os.environ['TRIDENT_BRAIN_MODEL'] = os.environ.get('TRIDENT_BRAIN_MODEL') or 'x-ai/grok-4.7'
     work = Path(args.work).resolve()
     work.mkdir(parents=True, exist_ok=True)
-    (work / 'region.txt').write_text('NONE', encoding='utf-8')
+    region = work / 'region.txt'
+    if not region.exists() or not region.read_text('utf-8').strip(): region.write_text('NONE', encoding='utf-8')
     (work / 'goal.txt').write_text(args.goal, encoding='utf-8')
     state = fara(work)
     run = work / 'runs' / time.strftime('goal_%Y%m%d_%H%M%S')
@@ -87,6 +99,7 @@ def loop():
         return
     if not state['turns']:
         subprocess.Popen(['cmd', '/c', 'start', '', args.launch], creationflags=CREATE_NO_WINDOW)
+        time.sleep(SETTLE)
     deadline = time.monotonic() + args.minutes * 60
     for n in range(1, args.steps + 1):
         if (work / 'stop').exists() or time.monotonic() >= deadline: break
@@ -94,7 +107,10 @@ def loop():
         argument = retina_arg(state['turns'], state['awaiting_user'], args.goal, args.answer)
         if argument is None: break
         foreground(args.window)
-        child(work, '--capture')
+        cap = child(work, '--capture')
+        if cap.returncode:
+            record(journal, dict(step=n, returncode=cap.returncode, saved=False, reply='', stderr=cap.stderr.decode('utf-8', 'replace')[-2000:]))
+            continue
         seen = len(fara(work)['turns'])
         proc = child(work, '--retina', *argument)
         state = fara(work)

@@ -712,6 +712,7 @@ class Engine:
         raw = self.vision.ask(text, image, screen['image'], self._prior(state))
         thoughts, call = fara_call(raw)
         arguments = call['arguments']
+        if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         state['turns'] += [dict(role='user', text=text, image=screen['image']), dict(role='assistant', text=raw)]
         state['awaiting_user'] = arguments.get('action') == 'ask_user_question'
         write(self.work / 'fara.json', state)
