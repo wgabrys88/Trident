@@ -4,3 +4,4 @@
 !/.gitignore
 !/goal-loop.py
 
+!/start-fara-cuda.ps1

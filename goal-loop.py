@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parent
 CREATE_NO_WINDOW = 0x08000000
 STOP_ACTIONS = frozenset(('terminate', 'ask_user_question'))
 STEPS, MINUTES = 60, 20
+FARA_FAILURES = 2  # stop after this many consecutive invalid Fara replies
 
 def plain(text):
     text = str(text).strip()
@@ -94,6 +95,7 @@ def loop(goal):
         else:
             row['stderr'] = proc.stderr.decode('utf-8', 'replace')[-2000:]
             record(journal, row)
+            if state.get('failures', 0) >= FARA_FAILURES: break
             continue
         if look.get('action') in STOP_ACTIONS:
             shot(work, run / f'step_{n:02d}.png')

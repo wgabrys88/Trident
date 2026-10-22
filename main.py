@@ -49,9 +49,15 @@ DRAG_DURATION = 0.2
 RETINA_TEMPERATURE = 0
 FARA_PATCH, FARA_MERGE = 16, 2
 FARA_FACTOR = FARA_PATCH * FARA_MERGE
-FARA_MIN_PIXELS = 1024 * FARA_FACTOR ** 2
+FARA_MIN_TOKENS = 256  # must equal the server's --image-min-tokens (start-fara-cuda.ps1)
+FARA_MIN_PIXELS = FARA_MIN_TOKENS * FARA_FACTOR ** 2
 FARA_MAX_PIXELS = 4096 * FARA_FACTOR ** 2
 FARA_IMAGES = 3
+FARA_TARGET_WIDTH = int(E('TRIDENT_FARA_WIDTH', '1440'))  # LANCZOS downscale to this width before the factor-32 fit; never upscales; 0 = off
+FARA_EPOCH = 6  # images are append-only inside an epoch (stable, cacheable prefix); at each boundary keep the last FARA_IMAGES - 1
+FARA_MAX_TOKENS = 512  # bound one Fara reply
+FARA_TIMEOUT = 180  # seconds per Fara request
+FARA_INVALID = 'Your previous reply was invalid ({}). Reply with your thought, then exactly one <tool_call>.'
 FARA_NEXT = 'Here is the next screenshot. Think about what to do next.'
 CAPTURE_SCALE = 1.0
 CAPTURE_NATIVE = 0
@@ -431,6 +437,8 @@ def _by_factor(number, factor, how):
 def fara_fit(im):
     height, width = im.height, im.width
     if max(height, width) / min(height, width) > 200: raise ValueError('bad image')
+    if FARA_TARGET_WIDTH and width > FARA_TARGET_WIDTH:  # native aspect kept; edges are rounded to FARA_FACTOR below
+        height, width = height * FARA_TARGET_WIDTH / width, FARA_TARGET_WIDTH
     h_bar = max(FARA_FACTOR, _by_factor(height, FARA_FACTOR, round))
     w_bar = max(FARA_FACTOR, _by_factor(width, FARA_FACTOR, round))
     if h_bar * w_bar > FARA_MAX_PIXELS:
@@ -444,9 +452,9 @@ def fara_fit(im):
     return im if (im.width, im.height) == (w_bar, h_bar) else im.resize((w_bar, h_bar), Image.Resampling.LANCZOS)
 
 def fara_call(raw):
-    parts = raw.split('<tool_call>\n', 1)
-    if len(parts) != 2 or '\n</tool_call>' not in parts[1]: raise ValueError('Fara tool_call expected')
-    thoughts, action_text = parts[0].strip(), parts[1].split('\n</tool_call>', 1)[0]
+    parts = raw.split('<tool_call>', 1)
+    if len(parts) != 2: raise ValueError('Fara tool_call expected')
+    thoughts, action_text = parts[0].strip(), parts[1].split('</tool_call>', 1)[0].strip()  # a missing closing tag is accepted
     try: call = json.loads(action_text)
     except json.JSONDecodeError: call = ast.literal_eval(action_text)
     if not isinstance(call, dict) or call.get('name') != 'computer_use' or not isinstance(call.get('arguments'), dict): raise ValueError('Fara tool_call expected')
@@ -559,7 +567,10 @@ class Vision(Oracle):
     headers = {}
     def ask(self, text, image, origin, prior):
         messages = [dict(role='system', content=FARA_SYSTEM), *prior, dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=text)])]
-        message = self.post(dict(model=VISION_MODEL, temperature=RETINA_TEMPERATURE, chat_template_kwargs=dict(enable_thinking=False), messages=messages), dict(question=text, image=origin, sent_size=list(image.size), prior=len(prior)))['choices'][0]['message']
+        response = self.post(dict(model=VISION_MODEL, temperature=RETINA_TEMPERATURE, max_tokens=FARA_MAX_TOKENS, chat_template_kwargs=dict(enable_thinking=False), messages=messages), dict(question=text, image=origin, sent_size=list(image.size), prior=len(prior)))
+        choice = response['choices'][0]; message = choice['message']
+        log('eye', dict(timings=response.get('timings'), finish=choice.get('finish_reason'), sent_size=list(image.size), prior=len(prior)))
+        if choice.get('finish_reason') == 'length': raise ValueError(f'reply cut at {FARA_MAX_TOKENS} tokens')
         content = (message.get('content') or '').strip()
         reasoning = (message.get('reasoning_content') or '').strip()
         # Qwen keeps reasoning_content off historical assistant turns. Fara's next request must still contain that thought, so it is stored inside the assistant content, ahead of the tool call.
@@ -615,7 +626,7 @@ class Hand:
 class Engine:
     work: Path
     fresh: InitVar[bool] = False
-    vision = Vision(VISION_URL + '/v1/chat/completions')
+    vision = Vision(VISION_URL + '/v1/chat/completions', FARA_TIMEOUT)
     decision = Decision(DECISION_URL)
     story_path = property(lambda self: self.work / 'story.txt')
     edit_log = property(lambda self: self.work / 'edit_log.txt')    # thrashing tracker
@@ -664,7 +675,8 @@ class Engine:
 
     def _prior(self, state):
         users = [i for i, turn in enumerate(state['turns']) if turn['role'] == 'user' and turn.get('image')]
-        keep = set(users[-(FARA_IMAGES - 1):])
+        base = len(users) // FARA_EPOCH * FARA_EPOCH
+        keep = set(users[max(0, base - (FARA_IMAGES - 1)):])
         messages = []
         for i, turn in enumerate(state['turns']):
             if turn['role'] == 'assistant':
@@ -688,16 +700,23 @@ class Engine:
         else:
             note = str(question).strip()
             text = f'{note}\n{FARA_NEXT}' if note else FARA_NEXT
+        if state.get('invalid'): text = FARA_INVALID.format(state['invalid']) + '\n' + text
         with Image.open(screen['image']) as im: image = fara_fit(im.convert('RGB'))
-        raw = self.vision.ask(text, image, screen['image'], self._prior(state))
-        thoughts, call = fara_call(raw)
-        arguments = call['arguments']
+        try:  # validate fully before anything is saved; a failed reply never enters fara.json
+            raw = self.vision.ask(text, image, screen['image'], self._prior(state))
+            thoughts, call = fara_call(raw)
+            arguments = call['arguments']
+            if arguments.get('action') not in FARA_TOOL['parameters']['properties']['action']['enum']: raise ValueError('unknown action')
+            point = fara_point(arguments)
+            program = fara_program(arguments, screen.get('size') or (0, 0))
+        except (ValueError, SyntaxError, OSError) as e:  # OSError: timeout, HTTP error, refused
+            state['invalid'], state['failures'] = str(e), state.get('failures', 0) + 1
+            write(self.work / 'fara.json', state); raise
+        state.pop('invalid', None); state['failures'] = 0
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         state['turns'] += [dict(role='user', text=text, image=screen['image']), dict(role='assistant', text=raw)]
         state['awaiting_user'] = arguments.get('action') == 'ask_user_question'
         write(self.work / 'fara.json', state)
-        point = fara_point(arguments)
-        program = fara_program(arguments, screen.get('size') or (0, 0))
         v = dict(capture=screen['id'], region=screen['region'], task=state['task'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=program)
         write('look.json', v); return v
 
