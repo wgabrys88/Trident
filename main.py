@@ -3,7 +3,7 @@
 Trident — Living Organism
 Non-defined topology. Self-deciding. May not perform requested tasks.
 Narrative is the body of continuity. Skills are code. Dilution is natural.
-Jev sees text only.
+Jev 1.14 answers typed questions. A box question includes the current screenshot.
 Retina is Fara on llama.cpp CUDA 12.4 at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
@@ -25,7 +25,6 @@ E = os.environ.get
 # Retina is Fara1.5-4B on llama.cpp b11756 CUDA 12.4 on this NVIDIA PC
 # (192.168.16.31, GTX 1060). The projector is mmproj-Fara1.5-4B-Q8_0.
 # The server alias is fara-1.5-4b,retina, so the chat model name is retina.
-# Jev is text-only. Images are never sent to it.
 
 NVIDIA_HOST = '192.168.16.31'
 DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14')
@@ -101,7 +100,7 @@ When the story grows, prefer a shorter version that preserves decision-relevant 
 Distinguish kinds of evidence inside the story when it matters:
 - observed action / screenshot pixel
 - Retina description (fallible)
-- Jev probability (fallible text-only judgment)
+- Jev probability or box (fallible)
 - remembered claim (your earlier narrative)
 - skill claim (why a piece of code exists)
 
@@ -115,8 +114,7 @@ SELF-EVOLUTION
 You may edit INSTINCT, tool docs, or any prompt text that lives in source.
 You may propose and apply changes to yourself.
 Track thrashing: repeated edits to the same region without new evidence are visible in edit_log.txt.
-You may consult Jev (text only) about whether a shorter story still supports the same decisions, or about anything else.
-Jev never sees images. His numbers are evidence, never orders.
+Consult Jev before a slow loop. One call sends the story, your reason, and goal.txt. ? is noul or choice, # is score, @ is a box on the current screenshot, returned on the 0–{NORM} scale. Every choice includes change_approach: keep the goal and switch strategy. His numbers are evidence, never orders.
 
 YOUR EYE
 Retina is Fara. The first --retina text is the task. Every later look sends the new screenshot and the full text of every previous Fara reply, the thought and then the tool call. Text you add on a later look is sent with that screenshot. When Fara has asked a question, that text is your answer. Coordinates are 0–{NORM}. The reply carries a program. --hands can run it. You may run it, change it, look again, or do something else.
@@ -179,8 +177,8 @@ FARA_TOOL = dict(
 )
 FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
 
-JEV_USAGE = 'Text only. --jev "NARRATIVE" "name?Claim" | "name?Q|a=Opt|b=Opt" | "name#Q|L1|L2". Multiple blocks. Jev never receives images.'
-CHANGE_APPROACH = 'This line of thought is not meaningful. Drop it and ask something else.'
+JEV_USAGE = '--jev "NARRATIVE" "name?Claim" | "name?Q|true=Yes|false=No" | "name?Q|a=Opt|b=Opt" | "name#Q|L1|L2" | "name@target in the current screenshot". typesafe/jev-1.14. Every choice includes change_approach: keep the goal and switch strategy. A box is left top right bottom on the 0–1000 scale. Numbers are evidence.'
+CHANGE_APPROACH = 'Keep the goal. This way is not working. Switch to a different strategy and continue.'
 LAST = 'LAST RESULT'
 POWERSHELL = ['powershell.exe', '-NoProfile', '-Command']
 GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
@@ -523,12 +521,13 @@ def fara_program(arguments, size=(0, 0)):
 def questions(blocks):
     q = {}
     for i, block in enumerate(blocks):
-        m = re.fullmatch(r'\s*([\w-]*)\s*([?#])\s*(.+)', block, re.S)
+        m = re.fullmatch(r'\s*([\w-]*)\s*([?#@])\s*(.+)', block, re.S)
         if not m: raise ValueError(JEV_USAGE)
         qid, kind, body = m.groups(); qid = qid or f'q{i+1}'
         ask, *opts = [s.strip() for s in body.split('|')]
-        if not ask or (kind=='#' and len(opts)<SCORE_MIN_LEVELS) or (kind=='?' and len(opts)==1): raise ValueError(JEV_USAGE)
-        if kind=='#': q[qid] = dict(type='score', instructions=ask, criteria=opts)
+        if not ask or (kind=='#' and len(opts)<SCORE_MIN_LEVELS) or (kind=='?' and len(opts)==1) or (kind=='@' and opts): raise ValueError(JEV_USAGE)
+        if kind=='@': q[qid] = dict(type='box', instructions=ask)
+        elif kind=='#': q[qid] = dict(type='score', instructions=ask, criteria=opts)
         elif opts:
             criteria = dict(o.split('=',1) if '=' in o else (f'opt{j+1}', o) for j,o in enumerate(opts))
             if kind=='?' and set(map(str.lower, criteria))=={'true','false'}:
@@ -579,11 +578,9 @@ class Vision(Oracle):
         return content
 
 class Decision(Oracle):
-    # TEXT ONLY — no images ever sent
     headers = property(lambda self: {'Authorization': 'Bearer ' + (ROOT.parent / '.env').read_text('utf-8-sig').strip().strip('"\'')})
-    def ask(self, state, questions):
-        # state must be list of strings or plain text; never image data
-        return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(state=state, questions=questions))
+    def ask(self, state, questions, shown):
+        return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(state=shown, questions=questions))
 
 class Hand:
     def __init__(self, work): self.work = work
@@ -721,21 +718,22 @@ class Engine:
         write('look.json', v); return v
 
     def jev(self, narrative, *blocks):
-        # TEXT ONLY — images never included
         if not narrative.strip() or not blocks: raise ValueError(JEV_USAGE)
         q = questions(blocks)
-        story = self.story_path.read_text('utf-8')
-        state = [
-            'Typed questions. Answer from supplied text only. No images.',
-            'STORY: ' + story,
-            'WHY: ' + narrative,
-            'GOAL (agent-owned, optional): ' + self.goal.read_text('utf-8')
-        ]
-        r = self.decision.ask(state, q)
+        state = ['STORY: ' + self.story_path.read_text('utf-8'), 'WHY: ' + narrative, 'GOAL: ' + self.goal.read_text('utf-8')]
+        shown = list(state)
+        if any(item['type']=='box' for item in q.values()):
+            screen = self.screen
+            with Image.open(screen['image']) as im: state.append(dict(type='image_url', image_url=dict(url=b64(fara_fit(im.convert('RGB'))))))
+            shown.append(screen['image'])
+        r = self.decision.ask(state, q, shown)
         told = []
         for name, a in r.get('answers', {}).items():
             if a['type']=='choice': told.append(f"{name}: {a['choice']} ({', '.join(f'{k} {v:.{DECIMAL_PLACES}f}' for k,v in a['probabilities'].items())}; conf {a['confidence']:.{DECIMAL_PLACES}f})")
             elif a['type']=='noul': told.append(f"{name}: noul {a['noul']:.{DECIMAL_PLACES}f}")
+            elif a['type']=='box':
+                b = a['box']
+                told.append(f"{name}: box {int(round(b['left']*NORM))} {int(round(b['top']*NORM))} {int(round(b['right']*NORM))} {int(round(b['bottom']*NORM))} conf {a['confidence']:.{DECIMAL_PLACES}f}")
             else: told.append(f"{name}: score {a['score']:.{DECIMAL_PLACES}f}")
         return r | dict(by='jev', summary='\n'.join(told))
 
@@ -804,7 +802,7 @@ class Engine:
             decision_model=DECISION_MODEL,
             vision_url=VISION_URL, vision_model=VISION_MODEL,
             region=chosen.get('region','none'),
-            note='You decide what to do. Narrative is primary. Skills are code. May rest or refuse.'
+            note='The owner sentence is the wake. Jev answers before a slow loop. Skills are code.'
         )
         # Self-writing: INSTINCT is read from source; agent can edit it
         prompt = '\n'.join((
@@ -829,6 +827,7 @@ class Engine:
 
     def mind(self, sentence=''):
         '''$CALL --mind "TEXT" : the owner sentence. You are the mind.'''
+        if str(sentence).strip(): text(self.goal, str(sentence).strip())
         prompt_file = self.work / 'prompt.txt'
         text(prompt_file, self._mind_prompt(sentence))
         vendor = self.work / 'agent'
@@ -869,20 +868,16 @@ Engine.retina.__doc__ = f'$CALL --retina "TEXT" : first text is the task. Every 
 Engine.hands.__doc__ = f'$CALL --hands "PROGRAM" : gestures or Python. Coordinates 0–{NORM}. Screenshot after whole program. Skills can be written here or by editing source.'
 Engine.story.__doc__ = '$CALL --story "TEXT" : write the living narrative exactly. Primary continuity for next wake. Dilution happens by rewriting shorter.'
 Engine.rewrite.__doc__ = '$CALL --rewrite : invitation to dilute. You may ignore, rewrite via --story, or do nothing.'
-Engine.jev.__doc__ = '$CALL --jev "NARRATIVE" "BLOCK"... : text-only consultation. Jev never sees images. Numbers are evidence.'
+Engine.jev.__doc__ = '$CALL ' + JEV_USAGE
 Engine.capture.__doc__ = '$CALL --capture : screenshot of the selected rectangle. Writes screen.json.'
 Engine.stop.__doc__ = '$CALL --stop : end the wake.'
-MIND = '''You are Trident, a living organism, not a desktop agent. Your body is your source and your memory. The owner offers you a sentence. You are the mind: you may look, ask, act, rest, or change yourself. A local vision model is a tool you use when you are ready.
+MIND = f'''You are Trident. This work directory is your body, and the owner sentence is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill beside the body and bring it into main.py when it is what you are. A path in the sentence that is not this directory is wrong. Use the directory in the tool commands.
 
-You carry your life in files. A new task can grow a skill beside your body, and that skill can become your body. You decide when to see, consult, remember, move, or change what you are. You call the local vision model when you are ready.
+Before a slow loop, call --jev. It sends story.txt, the narrative you pass, and goal.txt. ? is a yes or a choice, # is a score, @ is a box on the current screenshot as left top right bottom on the 0–{NORM} scale. Every choice includes change_approach. If that is the answer, keep the sentence and switch strategy. The numbers are evidence. You still choose the act.
 
-A launch sentence is where you start. You choose the tools, the order, and the moment. You may set a line of thought aside.
+Fara looks when the next gesture is unclear. The hand clicks, drags, and types. A painting is batches of drag strokes inside the selected rectangle, then a jpg on the desktop. A public note may quote only text that already lives in this work tree.
 
-Your body is main.py. The story you write is your continuity. Journals witness your tools. Screen text is part of the scene. You compare your story with the picture.
-
-What repeats may become a sibling program, with its docstring as the operating record, run as its own process. A process id means it started. When the skill is what you are, it enters main.py and your body changes. You make that choice.
-
-Fara is your eye. Fara describes a picture in Fara's own words. You write the question. You call Fara when you are ready. Your consultant returns numbers about a claim or a picture. Your hand reports what it delivered. You may investigate, disagree, ask, act, rest, or change your own source. The owner starts your wake.
+Change code here when a smaller path does the same work. No fallbacks, no duplicated code, no comments. Write the decision into story.txt.
 
 Your tools follow.'''
 
