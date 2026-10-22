@@ -7,7 +7,7 @@ Jev sees text only.
 Retina is Fara on llama.cpp CUDA 12.4 at 192.168.16.31:1234. The laptop at 192.168.16.45 starts the wake.
 """
 
-import argparse, ast, atexit, base64, ctypes, io, json, math, os, re, signal, socket, subprocess, sys, time, urllib.error, urllib.parse, urllib.request, uuid, win32job
+import argparse, ast, atexit, base64, ctypes, io, json, math, os, re, signal, socket, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid, win32job
 from contextlib import ExitStack, redirect_stdout
 from ctypes import wintypes
 from dataclasses import InitVar, dataclass
@@ -22,8 +22,6 @@ PYTHON = Path(sys.executable)
 E = os.environ.get
 
 # --- Organs ---
-# This file is the toolbox. It does not call the brain. The laptop
-# (192.168.16.45) driver does, through OpenRouter, model TRIDENT_BRAIN_MODEL.
 # Retina is Fara1.5-4B on llama.cpp b11756 CUDA 12.4 on this NVIDIA PC
 # (192.168.16.31, GTX 1060). The projector is mmproj-Fara1.5-4B-Q8_0.
 # The server alias is fara-1.5-4b,retina, so the chat model name is retina.
@@ -42,7 +40,6 @@ if sys.stdout.isatty():
 # Constants
 SCREENSHOT_DELAY = 4
 NORM = 1000
-BOX_EDGES = 4
 PAIR = 2
 DRAG_MIN_POINTS = 2
 SCORE_MIN_LEVELS = 2
@@ -65,7 +62,6 @@ JOURNAL_TICK = 0.4
 JOURNAL_RULE = 72
 DETACHED = 0x00000008 | 0x00000200 | 0x08000000
 HALT_POLL = 0.1
-FOLLOW_POLL = 1
 CLOCK_PLACES = 3
 SHOT_MS = 1000
 DECIMAL_PLACES = 2
@@ -279,9 +275,7 @@ def narrate(kind, data):
     else: rows.append(row(kind, text='' if data is None else str(data)))
     return rows
 def present_user(text):
-    head, runtime = text.split('\nRUNTIME\n', 1); runtime, goal = runtime.split('\nGOAL\n', 1); goal, memory = goal.split('\nMEMORY\n', 1); memory, last = memory.split('\n' + LAST + '\n', 1)
-    pre, tools = head.split('\nTOOLS\n', 1); launcher = re.search(r"& '[^']*' '[^']*' --work '[^']*'", tools).group(0)
-    return pre + '\nTOOLS\n\n' + launcher + '\n\n' + tools.replace(launcher + ' ', '') + '\nRUNTIME\n\n' + plain(json.loads(runtime)) + '\n\nGOAL\n\n' + goal + '\n\nMEMORY\n\n' + memory + '\n\n' + LAST + '\n\n' + last
+    return text
 def unfold(v):
     if not isinstance(v, str): return v
     v = v.replace('\r\n', '\n').replace('\r', '\n'); lines = v.splitlines() or ['']
@@ -325,7 +319,6 @@ def _xfer(fn, h, buf):
     while off < len(buf):
         chunk = (ctypes.c_char * (len(buf) - off)).from_buffer_copy(buf[off:]) if fn is K32.WriteFile else (ctypes.c_char * (len(buf) - off))()
         if not fn(h, chunk, len(chunk), ctypes.byref(n), None) or not n.value: raise ctypes.WinError()
-        if fn is not K32.WriteFile: buf[off:off + n.value] = chunk.raw[:n.value]
         off += n.value
 def append(blob):
     h = K32.CreateFileW(str(RUN), GENERIC_READ_WRITE, FILE_SHARE_ALL, None, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, None)
@@ -338,8 +331,7 @@ def append(blob):
         if not K32.GetFileSizeEx(h, ctypes.byref(size)): raise ctypes.WinError()
         if not K32.SetFilePointerEx(h, size.value, ctypes.byref(moved), 0): raise ctypes.WinError()
         _xfer(K32.WriteFile, h, blob)
-        if not K32.SetFilePointerEx(h, size.value, ctypes.byref(moved), 0): raise ctypes.WinError()
-        got = bytearray(len(blob)); _xfer(K32.ReadFile, h, got); return bytes(got)
+        return blob
     finally:
         if locked: K32.UnlockFileEx(h, 0, LOCK_ALL_LOW, LOCK_ALL_HIGH, ctypes.byref(ov))
         K32.CloseHandle(h)
@@ -433,12 +425,6 @@ def log(kind, data):
     serve()
     for item in narrate(kind, data): mirror(append(render(item)))
 
-def spot(bx):
-    if not (isinstance(bx,(list,tuple)) and len(bx)==BOX_EDGES): raise ValueError('bad box')
-    bx = [int(v) for v in bx]
-    if not (0<=bx[0]<bx[2]<=NORM and 0<=bx[1]<bx[3]<=NORM): raise ValueError('box range')
-    return bx, [(bx[0]+bx[2])//2, (bx[1]+bx[3])//2]
-
 def _by_factor(number, factor, how):
     return int(how(number / factor) * factor)
 
@@ -490,8 +476,7 @@ def fara_keys(names):
 
 def fara_wheel(pixels, span):
     pixels, span = int(pixels or 0), int(span or 0)
-    if not pixels or span <= 0: return 0
-    return int(pixels * span / NORM)
+    return 0 if not pixels or span <= 0 else int(round(pixels * span / 1000 / 120.0)) * 120
 
 def fara_open(url):
     url = str(url or '')
@@ -598,8 +583,6 @@ class Hand:
     def moveTo(self, x, y, duration=0):
         px, py = self.w._resolve_screen_pos(*map(int, self._pair(x,y).split(',')), self.region)
         self.w._move_cursor(px, py); return dict(at=[int(round(float(x))), int(round(float(y)))])
-    def moveRel(self, dx, dy, duration=0):
-        x, y = self.position(); return self.moveTo(x+dx, y+dy, duration)
     def click(self, x, y, button='left', clicks=1):
         pair = self._pair(x, y)
         if button=='right': self.w._do_right_click(pair, self.region)
@@ -620,8 +603,6 @@ class Hand:
     def set_clipboard(self, text):
         subprocess.run(POWERSHELL + ['[Console]::InputEncoding=[Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())'], input=str(text).encode('utf-8'), capture_output=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return dict(clipboard=len(str(text)))
-    def clipboard(self):
-        return subprocess.run(POWERSHELL + ['[Console]::OutputEncoding=[Text.UTF8Encoding]::new(); [Console]::Write((Get-Clipboard -Raw))'], capture_output=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout.decode('utf-8-sig')
     def paste(self, text): self.set_clipboard(text); return self.key('ctrl+v')
     def scroll(self, clicks, x=None, y=None):
         if x is None: x, y = self.position()
@@ -629,7 +610,6 @@ class Hand:
     def wheel(self, amount, x=None, y=None, horizontal=False):
         if x is None: x, y = self.position()
         self.w._do_wheel(self._pair(x, y), self.region, int(amount), horizontal); return dict(wheel=int(amount), horizontal=horizontal)
-    def release(self): return None
 
 @dataclass
 class Engine:
@@ -641,16 +621,14 @@ class Engine:
     edit_log = property(lambda self: self.work / 'edit_log.txt')    # thrashing tracker
     goal = property(lambda self: self.work / 'goal.txt')            # optional, agent-owned
     result = property(lambda self: self.work / 'result.json')
-    continuation = property(lambda self: self.work / 'next.json')
     sentinel = property(lambda self: self.work / 'stop')
     screen = property(lambda self: read('screen.json'))
-    look = property(lambda self: read('look.json'))
 
     def __post_init__(self, fresh):
         self.work.mkdir(parents=True, exist_ok=True)
         os.chdir(self.work)
         if fresh:
-            for f in (self.story_path, self.edit_log, self.goal, self.result, self.continuation, self.sentinel, Path('look.json'), Path('fara.json'), Path('region.txt')):
+            for f in (self.story_path, self.edit_log, self.goal, self.result, self.sentinel, Path('look.json'), Path('fara.json'), Path('region.txt')):
                 f.unlink(missing_ok=True)
         self.story_path.touch()
         self.edit_log.touch()
@@ -717,7 +695,6 @@ class Engine:
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         state['turns'] += [dict(role='user', text=text, image=screen['image']), dict(role='assistant', text=raw)]
         state['awaiting_user'] = arguments.get('action') == 'ask_user_question'
-        if arguments.get('action') == 'pause_and_memorize_fact': state.setdefault('facts', []).append(str(arguments.get('fact') or ''))
         write(self.work / 'fara.json', state)
         point = fara_point(arguments)
         program = fara_program(arguments, screen.get('size') or (0, 0))
@@ -769,8 +746,7 @@ class Engine:
 
     def hands(self, src):
         d = self.desktop
-        with ExitStack() as stack, redirect_stdout(io.StringIO()) as out:
-            stack.callback(d.release)
+        with redirect_stdout(io.StringIO()) as out:
             head = src.split(None, 1)[0] if src.strip() else ''
             if head in GESTURES: self._gestures(src)
             elif head: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
@@ -779,13 +755,11 @@ class Engine:
         write('screen.json', v); return v
 
     def story(self, narrative):
-        '''$CALL --story "TEXT" : writes exactly TEXT as the living narrative in story.txt. This is the primary continuity the next wake receives.'''
         text(self.story_path, narrative)
         self._log_edit('story.txt', 'rewrite')
         return dict(story_len=len(narrative))
 
     def rewrite(self, *_):
-        '''$CALL --rewrite : invitation to dilute the current story. You may ignore it, produce a shorter version, or do nothing.'''
         current = self.story_path.read_text('utf-8')
         # Agent decides; this tool simply surfaces the invitation
         return dict(invitation='rewrite', current_length=len(current), note='You may now rewrite story.txt via --story or hands if you choose.')
@@ -793,7 +767,6 @@ class Engine:
     def stop(self, *_):
         self.sentinel.touch()
         log('file', dict(path=str(self.sentinel), text=''))
-        self.desktop.release()
         sys.exit(0)
 
     def _emit(self, name, v):
@@ -850,7 +823,6 @@ class Engine:
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists())
         boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         with ExitStack() as stack:
-            stack.callback(self.desktop.release)
             p = subprocess.Popen([str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '-p', '--model', 'grok-4.7-xhigh', '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)], cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
             LIVE['agent'] = p
             stack.callback(p.wait)
@@ -871,19 +843,6 @@ class Engine:
                 try: finished = json.loads(line).get('type') == 'result'
                 except json.JSONDecodeError: finished = False
                 if finished: p.kill(); break
-
-    def _follow(self):
-        while True:
-            if self.sentinel.exists() or not self.continuation.exists(): break
-            log('file', dict(path=str(self.continuation), text=self.continuation.read_text('utf-8-sig')))
-            cmd = read(self.continuation); self.continuation.unlink()
-            if isinstance(cmd[0], (int, float)):
-                end = time.monotonic() + max(0, cmd.pop(0))
-                while time.monotonic() < end and not self.sentinel.exists():
-                    time.sleep(min(FOLLOW_POLL, end - time.monotonic()))
-            if self.sentinel.exists(): break
-            rc = subprocess.run([str(PYTHON), '-u', '-B', '-X', 'utf8', str(SCRIPT), '--work', str(self.work), '--chain', *map(str, cmd)]).returncode
-            if rc: log('wake_failed', dict(returncode=rc)); sys.exit(rc)
 
 # Docstrings for tools (agent sees these)
 Engine.region.__doc__ = f'$CALL --region : select rectangle. 0–{NORM} scale for eye and hand. Right-click = full screen. Escape cancels.'
@@ -962,13 +921,8 @@ def main():
         if a.entry:
             result = getattr(engine, a.entry)(*a.args)
             if result is not None: engine._emit(a.entry, result)
-        if not a.entry or (a.entry == 'composer' and not a.chain):
-            engine._follow()
     except KeyboardInterrupt:
         note_halt('ctrl+c')
-        if engine is not None and 'desktop' in engine.__dict__:
-            try: engine.desktop.release()
-            except Exception: pass
         sys.exit(INTERRUPTED_EXIT)
 
 if __name__ == '__main__':

@@ -64,7 +64,6 @@ def prepare(work, goal):
     return ''
 
 def loop(goal):
-    os.environ['TRIDENT_BRAIN_MODEL'] = os.environ.get('TRIDENT_BRAIN_MODEL') or 'x-ai/grok-4.7'
     work = ROOT / 'task'
     answer = prepare(work, goal)
     if answer is None: return

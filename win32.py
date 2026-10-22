@@ -432,8 +432,6 @@ def _do_capture(region_str: str, width: int, height: int, scale: float) -> bytes
     if scale > 0.0:
         width = max(1, int(crop_w * scale))
         height = max(1, int(crop_h * scale))
-    if width <= 0 or height <= 0:
-        _err(f"capture: invalid output dimensions {width}x{height}")
     stretched: bytes = _stretch_region(bgra, src_w, src_h, crop_x1, crop_y1, crop_x2, crop_y2, width, height)
     return _bgra_to_png(stretched, width, height)
 
@@ -518,16 +516,6 @@ def _do_type_text(text: str) -> None:
         if need_ctrl:
             _key_event(0x11, True)
         time.sleep(CFG.type_inter_key_delay)
-
-
-def _do_press_key(key_name: str) -> None:
-    lower_name: str = key_name.strip().lower()
-    vk_code: int | None = VK_MAP.get(lower_name)
-    if vk_code is None:
-        _err(f"unknown key: {key_name}")
-    _key_event(vk_code)
-    time.sleep(CFG.key_settle_delay)
-    _key_event(vk_code, True)
 
 
 def _do_hotkey(keys_str: str) -> None:
@@ -782,87 +770,3 @@ def _do_select_region() -> tuple[str, int]:
         norm_x2, norm_y2 = _screen_pixel_to_norm(px_x2, px_y2, 0, 0, K.norm, K.norm)
         return f"{norm_x1},{norm_y1},{norm_x2},{norm_y2}", 0
     return K.sentinel, _selector_exit_code
-
-
-def main() -> None:
-    ctypes.WinDLL("shcore", use_last_error=True).SetProcessDpiAwareness(CFG.dpi_awareness)
-    _setup_bindings()
-
-    args: list[str] = sys.argv[1:]
-    if not args:
-        _err("usage: python win32.py <command> [options]")
-
-    command: str = args[0]
-
-    def get_arg(name: str) -> str:
-        flag: str = f"--{name}"
-        for idx, val in enumerate(args):
-            if val == flag and idx + 1 < len(args):
-                return args[idx + 1]
-        _err(f"missing required argument: --{name}")
-
-    def get_arg_optional(name: str, default: str) -> str:
-        flag: str = f"--{name}"
-        for idx, val in enumerate(args):
-            if val == flag and idx + 1 < len(args):
-                return args[idx + 1]
-        return default
-
-    match command:
-        case "capture":
-            region_arg: str = get_arg("region")
-            scale_str: str = get_arg_optional("scale", "0.0")
-            scale_val: float = float(scale_str)
-            width_arg: int = int(get_arg_optional("width", "0"))
-            height_arg: int = int(get_arg_optional("height", "0"))
-            if scale_val <= 0.0 and (width_arg <= 0 or height_arg <= 0):
-                _err("capture requires either --scale or both --width and --height")
-            png_bytes: bytes = _do_capture(region_arg, width_arg, height_arg, scale_val)
-            sys.stdout.buffer.write(png_bytes)
-            sys.stdout.buffer.flush()
-
-        case "click":
-            _do_click(get_arg("pos"), get_arg("region"))
-
-        case "double_click":
-            _do_double_click(get_arg("pos"), get_arg("region"))
-
-        case "right_click":
-            _do_right_click(get_arg("pos"), get_arg("region"))
-
-        case "type_text":
-            _do_type_text(get_arg("text"))
-
-        case "press_key":
-            _do_press_key(get_arg("key"))
-
-        case "hotkey":
-            _do_hotkey(get_arg("keys"))
-
-        case "scroll_up":
-            _do_scroll(get_arg("pos"), get_arg("region"), 1, int(get_arg("clicks")))
-
-        case "scroll_down":
-            _do_scroll(get_arg("pos"), get_arg("region"), -1, int(get_arg("clicks")))
-
-        case "drag":
-            _do_drag(get_arg("from_pos"), get_arg("to_pos"), get_arg("region"))
-
-        case "cursor_pos":
-            coords: str = _do_cursor_pos(get_arg("region"))
-            sys.stdout.write(coords + "\n")
-            sys.stdout.flush()
-
-        case "select_region":
-            region_result, code = _do_select_region()
-            if code != 0:
-                raise SystemExit(code)
-            sys.stdout.write(region_result + "\n")
-            sys.stdout.flush()
-
-        case _:
-            _err(f"unknown command: {command}")
-
-
-if __name__ == "__main__":
-    main()
