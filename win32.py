@@ -214,6 +214,12 @@ def _setup_bindings() -> None:
     _user32.SetFocus.restype = W.HWND
     _user32.FillRect.argtypes = [W.HDC, ctypes.POINTER(W.RECT), W.HBRUSH]
     _user32.FillRect.restype = W.BOOL
+    _user32.EnumWindows.argtypes = [ctypes.c_void_p, W.LPARAM]
+    _user32.EnumWindows.restype = W.BOOL
+    _user32.GetForegroundWindow.argtypes = []
+    _user32.GetForegroundWindow.restype = W.HWND
+    _user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
+    _user32.GetWindowTextW.restype = ctypes.c_int
     _gdi32.CreateSolidBrush.argtypes = [W.DWORD]
     _gdi32.CreateSolidBrush.restype = W.HBRUSH
     _gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, W.DWORD]
@@ -232,6 +238,20 @@ def _clamp_norm(value: int) -> int:
 
 def _screen_size() -> tuple[int, int]:
     return int(_user32.GetSystemMetrics(K.sm_cxscreen)), int(_user32.GetSystemMetrics(K.sm_cyscreen))
+
+
+def _do_windows() -> list[int]:
+    found: list[int] = []
+    proc = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)(lambda hwnd, _: found.append(int(hwnd or 0)) is None)
+    _user32.EnumWindows(proc, 0)
+    return found
+
+
+def _do_foreground() -> tuple[int, str]:
+    hwnd = _user32.GetForegroundWindow()
+    title = ctypes.create_unicode_buffer(512)
+    _user32.GetWindowTextW(hwnd, title, len(title))
+    return int(hwnd or 0), title.value
 
 
 def _make_bmi(width: int, height: int) -> _BitmapInfo:

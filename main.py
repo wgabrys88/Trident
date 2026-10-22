@@ -38,7 +38,7 @@ if sys.stdout.isatty():
     os.environ.setdefault('TRIDENT_CONSOLE', str(os.getpid()))
 
 # Constants
-SCREENSHOT_DELAY = 4
+SCREENSHOT_DELAY = float(E('TRIDENT_SHOT_DELAY', '4'))
 NORM = 1000
 PAIR = 2
 DRAG_MIN_POINTS = 2

@@ -5,7 +5,7 @@ Fara is the eye and the hand's author. The first look is the goal.
 Every later look is sent with no extra text, so main.py resends each
 saved assistant reply: the thought, then the tool call.
 """
-import json, os, shutil, subprocess, sys, time
+import json, os, re, shutil, subprocess, sys, time
 from pathlib import Path
 
 import main
@@ -15,6 +15,9 @@ CREATE_NO_WINDOW = 0x08000000
 STOP_ACTIONS = frozenset(('terminate', 'ask_user_question'))
 STEPS, MINUTES = 60, 20
 FARA_FAILURES = 2  # stop after this many consecutive invalid Fara replies
+REPEAT_LIMIT = int(os.environ.get('TRIDENT_REPEAT_LIMIT', '2'))  # identical actions allowed in a row; the next identical one is refused (0 = off)
+TYPE_ALLOW = re.compile(os.environ.get('TRIDENT_TYPE_ALLOW', r'^\*?(Untitled|Calculator)\b'))  # window titles that may receive keystrokes
+KEYBOARD = frozenset(('type', 'key', 'history_back'))
 
 def plain(text):
     text = str(text).strip()
@@ -46,6 +49,19 @@ def shot(work, dest):
     src = Path(screen.get('image') or '')
     if src.is_file(): shutil.copyfile(src, dest)
 
+def same(look):
+    arguments = look.get('arguments') or {}
+    return [look.get('action'), look.get('coordinate'), arguments.get('text'), arguments.get('keys')]
+
+def refuse(look, before, recent):
+    if REPEAT_LIMIT and recent[-REPEAT_LIMIT:] == [same(look)] * REPEAT_LIMIT:
+        return f"Your last action was not executed: the same {look.get('action')} was already done {REPEAT_LIMIT} times in a row and did not change the screen. Try something else."
+    if look.get('action') in KEYBOARD:
+        hwnd, title = main.HAND()._do_foreground()
+        if not TYPE_ALLOW.search(title) and (hwnd in before or title.endswith(' - Notepad')):  # Notepad reopens old tabs in a new window
+            return f'Your last action was not executed: the foreground window "{title}" holds the user\'s existing work and must not receive keystrokes. Open a new window for the task and use that.'
+    return ''
+
 def record(journal, row):
     main.log('step', {k: v for k, v in row.items() if k != 'stderr'})
     with journal.open('a', encoding='utf-8') as out: out.write(json.dumps(row, ensure_ascii=False) + '\n')
@@ -73,11 +89,13 @@ def loop(goal):
     run.mkdir(parents=True)
     journal = run / 'steps.jsonl'
     deadline = time.monotonic() + MINUTES * 60
+    before, recent, note, refused = set(main.HAND()._do_windows()), [], '', 0
     for n in range(1, STEPS + 1):
         if (work / 'stop').exists() or time.monotonic() >= deadline: break
         state = fara(work)
         argument = retina_arg(state['turns'], state['awaiting_user'], goal, answer)
         if argument is None: break
+        if note and argument == (): argument, note = (note,), ''
         cap = child(work, '--capture')
         if cap.returncode:
             record(journal, dict(step=n, returncode=cap.returncode, saved=False, reply='', stderr=cap.stderr.decode('utf-8', 'replace')[-2000:]))
@@ -101,6 +119,13 @@ def loop(goal):
             shot(work, run / f'step_{n:02d}.png')
             record(journal, row)
             break
+        block = refuse(look, before, recent)
+        if block:
+            row.update(hands=None, refused=block); record(journal, row)
+            note, refused = block, refused + 1
+            if refused >= FARA_FAILURES: break
+            continue
+        refused = 0; recent.append(same(look))
         hands = child(work, '--hands', look.get('program') or '')
         row['hands'] = hands.returncode
         if hands.returncode: row['stderr'] = hands.stderr.decode('utf-8', 'replace')[-2000:]
