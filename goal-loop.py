@@ -18,6 +18,7 @@ FARA_FAILURES = 2  # stop after this many consecutive invalid Fara replies
 REPEAT_LIMIT = int(os.environ.get('TRIDENT_REPEAT_LIMIT', '2'))  # identical actions allowed in a row; the next identical one is refused (0 = off)
 TYPE_ALLOW = re.compile(os.environ.get('TRIDENT_TYPE_ALLOW', r'^\*?(Untitled|Calculator)\b'))  # window titles that may receive keystrokes
 KEYBOARD = frozenset(('type', 'key', 'history_back'))
+NAV_KEYS = frozenset(('tab', 'shift', 'up', 'down', 'left', 'right', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'pageup', 'pagedown'))  # each press moves focus or scrolls: exempt from REPEAT_LIMIT
 
 def plain(text):
     text = str(text).strip()
@@ -54,7 +55,9 @@ def same(look):
     return [look.get('action'), look.get('coordinate'), arguments.get('text'), arguments.get('keys')]
 
 def refuse(look, before, recent):
-    if REPEAT_LIMIT and recent[-REPEAT_LIMIT:] == [same(look)] * REPEAT_LIMIT:
+    keys = (look.get('arguments') or {}).get('keys') or []
+    nav = look.get('action') == 'key' and keys and all(str(k).strip().lower() in NAV_KEYS for k in keys)
+    if REPEAT_LIMIT and not nav and recent[-REPEAT_LIMIT:] == [same(look)] * REPEAT_LIMIT:
         return f"Your last action was not executed: the same {look.get('action')} was already done {REPEAT_LIMIT} times in a row and did not change the screen. Try something else."
     if look.get('action') in KEYBOARD:
         hwnd, title = main.HAND()._do_foreground()
