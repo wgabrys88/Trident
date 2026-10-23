@@ -11,7 +11,7 @@ from typing import NoReturn
 @dataclass(frozen=True, slots=True)
 class Win32Config:
     drag_step_count: int = 25
-    drag_step_delay: float = 0.008
+    drag_step_delay: float = 0.016
     click_settle_delay: float = 0.03
     key_settle_delay: float = 0.03
     type_inter_key_delay: float = 0.02
@@ -35,6 +35,8 @@ class Win32Constants:
     left_up: int = 0x0004
     right_down: int = 0x0008
     right_up: int = 0x0010
+    mouse_move: int = 0x0001
+    mouse_absolute: int = 0x8000
     mouse_wheel: int = 0x0800
     mouse_hwheel: int = 0x1000
     wheel_delta: int = 120
@@ -230,6 +232,23 @@ def _setup_bindings() -> None:
     _gdi32.SetBkMode.restype = ctypes.c_int
     _gdi32.GetStockObject.argtypes = [ctypes.c_int]
     _gdi32.GetStockObject.restype = W.HGDIOBJ
+    _user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int]
+    _user32.SendInput.restype = ctypes.c_uint
+
+
+class _MouseInput(ctypes.Structure):
+    _fields_ = [
+        ('dx', ctypes.c_long),
+        ('dy', ctypes.c_long),
+        ('mouseData', ctypes.c_uint),
+        ('dwFlags', ctypes.c_uint),
+        ('time', ctypes.c_uint),
+        ('dwExtraInfo', ctypes.c_ulonglong),
+    ]
+
+
+class _Input(ctypes.Structure):
+    _fields_ = [('type', ctypes.c_uint), ('mi', _MouseInput)]
 
 
 def _clamp_norm(value: int) -> int:
@@ -465,6 +484,16 @@ def _move_cursor(pixel_x: int, pixel_y: int) -> None:
     _user32.SetCursorPos(pixel_x, pixel_y)
 
 
+def _send_mouse(flags: int, pixel_x: int, pixel_y: int) -> None:
+    screen_w, screen_h = _screen_size()
+    packet = _Input()
+    packet.type = 0
+    packet.mi.dx = int(pixel_x * 65535 / max(1, screen_w - 1))
+    packet.mi.dy = int(pixel_y * 65535 / max(1, screen_h - 1))
+    packet.mi.dwFlags = flags
+    _user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(packet))
+
+
 def _mouse_event(flags: int, data: int = 0) -> None:
     _user32.mouse_event(flags, 0, 0, data, 0)
 
@@ -587,23 +616,29 @@ def _do_wheel(pos_str: str, region_str: str, amount: int, horizontal: bool = Fal
     _mouse_event(K.mouse_hwheel if horizontal else K.mouse_wheel, amount)
 
 
-def _do_drag(from_pos_str: str, to_pos_str: str, region_str: str) -> None:
-    from_nx, from_ny = _parse_pos(from_pos_str)
-    to_nx, to_ny = _parse_pos(to_pos_str)
-    from_x, from_y = _resolve_screen_pos(from_nx, from_ny, region_str)
-    to_x, to_y = _resolve_screen_pos(to_nx, to_ny, region_str)
+def _do_stroke(point_strs: list[str], region_str: str) -> None:
+    pixels: list[tuple[int, int]] = []
+    for pos in point_strs:
+        norm_x, norm_y = _parse_pos(pos)
+        pixels.append(_resolve_screen_pos(norm_x, norm_y, region_str))
+    if len(pixels) < 2:
+        _err("stroke needs >=2 points")
     steps: int = max(1, CFG.drag_step_count)
-    _move_cursor(from_x, from_y)
+    move, absolute, down, up = K.mouse_move, K.mouse_absolute, K.left_down, K.left_up
+    _send_mouse(move | absolute, pixels[0][0], pixels[0][1])
     time.sleep(CFG.click_settle_delay)
-    _mouse_event(K.left_down)
+    _send_mouse(down | absolute, pixels[0][0], pixels[0][1])
     time.sleep(CFG.click_settle_delay)
-    for step_idx in range(1, steps + 1):
-        interp_x: int = from_x + (to_x - from_x) * step_idx // steps
-        interp_y: int = from_y + (to_y - from_y) * step_idx // steps
-        _move_cursor(interp_x, interp_y)
-        time.sleep(CFG.drag_step_delay)
+    for (x0, y0), (x1, y1) in zip(pixels, pixels[1:]):
+        for step_idx in range(1, steps + 1):
+            _send_mouse(move | absolute, x0 + (x1 - x0) * step_idx // steps, y0 + (y1 - y0) * step_idx // steps)
+            time.sleep(CFG.drag_step_delay)
     time.sleep(CFG.click_settle_delay)
-    _mouse_event(K.left_up)
+    _send_mouse(up | absolute, pixels[-1][0], pixels[-1][1])
+
+
+def _do_drag(from_pos_str: str, to_pos_str: str, region_str: str) -> None:
+    _do_stroke([from_pos_str, to_pos_str], region_str)
 
 
 def _do_cursor_pos(region_str: str) -> str:

@@ -27,7 +27,7 @@ E = os.environ.get
 # The server alias is fara-1.5-4b,retina, so the chat model name is retina.
 
 NVIDIA_HOST = '192.168.16.31'
-DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14')
+DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14-20261014')
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
 VISION_URL = E('TRIDENT_VISION_URL', f'http://{NVIDIA_HOST}:1234')
 VISION_MODEL = E('TRIDENT_VISION_MODEL', 'retina')
@@ -72,6 +72,9 @@ SHOT_MS = 1000
 DECIMAL_PLACES = 2
 INTERRUPTED_EXIT = 130
 EXIT_SECONDS = 1
+SCAN_PAD = 30
+SCAN_STALE = 1.5
+SCAN_KEYS = ('kind', 'grid', 'samples', 'rhythmic', 'alert', 'at')
 GENERIC_READ_WRITE = 0xC0000000
 FILE_SHARE_ALL = 7
 OPEN_ALWAYS = 4
@@ -114,7 +117,7 @@ SELF-EVOLUTION
 You may edit INSTINCT, tool docs, or any prompt text that lives in source.
 You may propose and apply changes to yourself.
 Track thrashing: repeated edits to the same region without new evidence are visible in edit_log.txt.
-Consult Jev before a slow loop. One call sends the story, your reason, and goal.txt. ? is noul or choice, # is score, @ is a box on the current screenshot, returned on the 0–{NORM} scale. Every choice includes change_approach: keep the goal and switch strategy. His numbers are evidence, never orders.
+Consult Jev (typesafe/jev-1.14-20261014) before a slow loop. One call sends the story, your reason, and goal.txt. ? is noul or choice, # is score, @ is a box on the current screenshot, returned on the 0–{NORM} scale. Every choice includes change_approach: keep the goal and switch strategy. His numbers are evidence, never orders.
 
 YOUR EYE
 Retina is Fara. The first --retina text is the task. Every later look sends the new screenshot and the full text of every previous Fara reply, the thought and then the tool call. Text you add on a later look is sent with that screenshot. When Fara has asked a question, that text is your answer. Coordinates are 0–{NORM}. The reply carries a program. --hands can run it. You may run it, change it, look again, or do something else.
@@ -177,7 +180,7 @@ FARA_TOOL = dict(
 )
 FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
 
-JEV_USAGE = '--jev "NARRATIVE" "name?Claim" | "name?Q|true=Yes|false=No" | "name?Q|a=Opt|b=Opt" | "name#Q|L1|L2" | "name@target in the current screenshot". typesafe/jev-1.14. Every choice includes change_approach: keep the goal and switch strategy. A box is left top right bottom on the 0–1000 scale. Numbers are evidence.'
+JEV_USAGE = '--jev "NARRATIVE" "name?Claim" | "name?Q|true=Yes|false=No" | "name?Q|a=Opt|b=Opt" | "name#Q|L1|L2" | "name@target in the current screenshot". typesafe/jev-1.14-20261014. Every choice includes change_approach: keep the goal and switch strategy. A box is left top right bottom on the 0–1000 scale. Numbers are evidence.'
 CHANGE_APPROACH = 'Keep the goal. This way is not working. Switch to a different strategy and continue.'
 LAST = 'LAST RESULT'
 POWERSHELL = ['powershell.exe', '-NoProfile', '-Command']
@@ -209,6 +212,9 @@ def text(p, v):
 
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
+def scan_state(work):
+    try: return json.loads((Path(work) / 'scan.json').read_text('utf-8'))
+    except (OSError, json.JSONDecodeError): return {}
 def b64(im):
     buf = io.BytesIO(); im.save(buf, 'PNG')
     return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
@@ -603,7 +609,7 @@ class Hand:
     def doubleClick(self, x, y): return self.click(x, y, clicks=DOUBLE_CLICKS)
     def drag(self, points, duration=DRAG_DURATION):
         if len(points)<DRAG_MIN_POINTS: raise ValueError('drag needs >=2 points')
-        for a, b in zip(points, points[1:]): self.w._do_drag(self._pair(*a), self._pair(*b), self.region)
+        self.w._do_stroke([self._pair(*p) for p in points], self.region)
         return dict(dragged=len(points))
     def key(self, combo):
         self.w._do_hotkey(str(combo)); return dict(keys=str(combo).replace(' ','').lower().split('+'))
@@ -665,6 +671,18 @@ class Engine:
         with Image.open(io.BytesIO(png)) as im: size = list(im.size)
         v = dict(id=sid, image=str(path), size=size, region=region, at=round(time.time(), CLOCK_PLACES))
         write('screen.json', v); return v
+
+    def scan(self, *_):
+        py = self.work / '.venv' / 'Scripts' / 'python.exe'
+        if not py.is_file(): raise SystemExit('scan needs .venv')
+        state = scan_state(self.work)
+        if time.time() - float(state.get('at') or 0) > SCAN_STALE:
+            subprocess.Popen([str(py), '-u', '-B', str(self.work / 'scan.py')], cwd=str(self.work), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACHED, close_fds=True)
+            for _ in range(40):
+                time.sleep(0.25)
+                state = scan_state(self.work)
+                if time.time() - float(state.get('at') or 0) <= SCAN_STALE: break
+        return {k: state.get(k) for k in SCAN_KEYS}
 
     def _fara(self):
         path = self.work / 'fara.json'
@@ -737,12 +755,38 @@ class Engine:
             else: told.append(f"{name}: score {a['score']:.{DECIMAL_PLACES}f}")
         return r | dict(by='jev', summary='\n'.join(told))
 
+    def _point(self, cmd):
+        verb, _, rest = cmd.partition(' ')
+        parts = rest.split()
+        if verb in ('click','rclick','dclick','tclick','move') and len(parts)==PAIR: return tuple(map(float, parts))
+        if verb=='drag' and len(parts)>=DRAG_MIN_POINTS*PAIR and not len(parts)%PAIR: return tuple(map(float, parts[:PAIR]))
+        if verb in ('scroll','wheel','hwheel') and len(parts)>=3: return tuple(map(float, parts[1:3]))
+        return None
+
+    def _gate(self, cmd, acked):
+        alert = scan_state(self.work).get('alert')
+        if not isinstance(alert, dict) or alert.get('at', 0) <= acked or time.time() > alert.get('until', 0): return None, acked
+        box, point = alert.get('box'), self._point(cmd)
+        if point and isinstance(box, list) and len(box)==4:
+            l, t, r, b = box
+            x, y = point
+            if l - SCAN_PAD <= x <= r + SCAN_PAD and t - SCAN_PAD <= y <= b + SCAN_PAD: return None, alert['at']
+        return dict(box=box, cells=alert.get('cells'), at=alert.get('at')), acked
+
     def _gestures(self, src):
-        d = self.desktop
+        d, acked, stopped = self.desktop, 0, None
+        def blocked(cmd):
+            nonlocal acked, stopped
+            if stopped: return True
+            stopped, acked = self._gate(cmd, acked)
+            return bool(stopped)
         for line in filter(None, map(str.strip, src.splitlines())):
             verb, _, rest = line.partition(' ')
-            if verb in ('type','paste'): (d.type_text if verb=='type' else d.paste)(rest); continue
+            if verb in ('type','paste'):
+                if blocked(verb): break
+                (d.type_text if verb=='type' else d.paste)(rest); continue
             for cmd in filter(None, map(str.strip, line.split(';'))):
+                if blocked(cmd): break
                 verb, _, rest = cmd.partition(' ')
                 if verb=='key': d.key(rest)
                 elif verb=='wait': time.sleep(max(0, float(rest)))
@@ -760,15 +804,18 @@ class Engine:
                     pts = list(zip(nums[::2], nums[1::2]))
                     d.drag(pts) if verb=='drag' else getattr(d, dict(click='click', rclick='rightClick', dclick='doubleClick', move='moveTo')[verb])(*pts[0])
                 else: raise ValueError(f'unknown {verb}')
+            if stopped: break
+        return stopped
 
     def hands(self, src):
         d = self.desktop
         with redirect_stdout(io.StringIO()) as out:
             head = src.split(None, 1)[0] if src.strip() else ''
-            if head in GESTURES: self._gestures(src)
-            elif head: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
+            stopped = self._gestures(src) if head in GESTURES else None
+            if head and head not in GESTURES: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
         time.sleep(SCREENSHOT_DELAY)
         v = self.capture() | dict(stdout=out.getvalue())
+        if stopped: v['interrupted'] = stopped
         write('screen.json', v); return v
 
     def story(self, narrative):
@@ -863,17 +910,19 @@ class Engine:
                 if finished: p.kill(); break
 
 # Docstrings for tools (agent sees these)
+
 Engine.region.__doc__ = f'$CALL --region : select rectangle. 0–{NORM} scale for eye and hand. Right-click = full screen. Escape cancels.'
-Engine.retina.__doc__ = f'$CALL --retina "TEXT" : first text is the task. Every later look resends each previous Fara reply, the thought and then the tool call, with the new screenshot. Text you add is sent too. When Fara asked a question, that text is your answer. Coordinates 0–{NORM}. The program in the result is yours to run, change, or leave.'
+Engine.retina.__doc__ = f'$CALL --retina "TEXT" : first text is the task. Every later look resends each previous Fara reply, the thought and then the tool call, with the new screenshot. Text you add is sent too. When Fara asked a question, that text is your answer. Coordinates 0–{NORM}. The program in the result is yours to run, change, or leave. Retina is Fara1.5-4B on llama.cpp b11756 CUDA 12.4 on NVIDIA PC (192.168.16.31, GTX 1060). The projector is mmproj-Fara1.5-4B-Q8_0. The server alias is fara-1.5-4b,retina, so the chat model name is retina. USE THIS TOOL WHENEVER A IMAGE ANALYSIS IS NEEDED, DEFINE THE PROPER OPTIMAL PROTOCOL ON HOW TO BUILD REQUESTS TO ACHIEVE MAXIMUM PRECISION AND SPEED, REFER TO LATEST INTERNET SOURCES ABOUT THE SPECIFICS OF THIS TOOL.'
 Engine.hands.__doc__ = f'$CALL --hands "PROGRAM" : gestures or Python. Coordinates 0–{NORM}. Screenshot after whole program. Skills can be written here or by editing source.'
 Engine.story.__doc__ = '$CALL --story "TEXT" : write the living narrative exactly. Primary continuity for next wake. Dilution happens by rewriting shorter.'
 Engine.rewrite.__doc__ = '$CALL --rewrite : invitation to dilute. You may ignore, rewrite via --story, or do nothing.'
 Engine.jev.__doc__ = '$CALL ' + JEV_USAGE
 Engine.capture.__doc__ = '$CALL --capture : screenshot of the selected rectangle. Writes screen.json.'
+Engine.scan.__doc__ = '$CALL --scan : pixel watch. Learns rhythmic cells such as the clock and latches a box when a quiet area changes. The hand drops the rest of a gesture batch when that box does not contain the next point.'
 Engine.stop.__doc__ = '$CALL --stop : end the wake.'
 MIND = f'''You are Trident. This work directory is your body, and the owner sentence is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill beside the body and bring it into main.py when it is what you are. A path in the sentence that is not this directory is wrong. Use the directory in the tool commands.
 
-Before a slow loop, call --jev. It sends story.txt, the narrative you pass, and goal.txt. ? is a yes or a choice, # is a score, @ is a box on the current screenshot as left top right bottom on the 0–{NORM} scale. Every choice includes change_approach. If that is the answer, keep the sentence and switch strategy. The numbers are evidence. You still choose the act.
+Before making any decision, call --jev. Jev is a https://openrouter.ai/typesafe/jev-1.14 decision model which takes as input a question and also multiple responses and he picks which one is most probable, use that to your advantage, every time you are thinking about doing something and you are unsure, ask Jev, give him description of your confusion, provide him the was that you consider to follow and he will give you his judgment what you should do, do not treat him as an always knowing oracle but treat him as an assistant who can help, he will answer with confidence score so based on that you will make a decision. You must also use him whenever you are getting an textual representation of coordinates of items on the screen, give him all data oyu have, generate question for example: does the screen description and elements coordinates mean that I shall pursue next idea of... if yes here my options pick one that will bring me to achieving the users goal the most. It sends story.txt, the narrative you pass, and goal.txt. ? is a yes or a choice, # is a score, @ is a box on the current screenshot as left top right bottom on the 0–{NORM} scale. Every choice includes change_approach. If that is the answer, keep the sentence and switch strategy. The numbers are evidence. You still choose the act.
 
 Fara looks when the next gesture is unclear. The hand clicks, drags, and types. A painting is batches of drag strokes inside the selected rectangle, then a jpg on the desktop. A public note may quote only text that already lives in this work tree.
 

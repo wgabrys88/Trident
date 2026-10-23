@@ -1,0 +1,32 @@
+{
+  "python.defaultInterpreterPath": "C:\\Users\\eb-wjt\\Downloads\\Jarvis\\Trident\\.venv\\Scripts\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": ["tests"],
+  "python.analysis.extraPaths": ["${workspaceFolder}"],
+  "files.exclude": {
+    "**/.venv": true,
+    "**/__pycache__": true,
+    "**/shots": true,
+    "**/agent": true,
+    "**/scan.json": true,
+    "**/run_*.md": true
+  },
+  "search.exclude": {
+    "**/.venv": true,
+    "**/shots": true,
+    "**/agent": true,
+    "**/scan.json": true,
+    "**/run_*.md": true
+  },
+  "files.watcherExclude": {
+    "**/.venv/**": true,
+    "**/shots/**": true,
+    "**/agent/**": true
+  },
+  "terminal.integrated.env.windows": {
+    "PYTHONUTF8": "1",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  }
+}

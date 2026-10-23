@@ -3,5 +3,10 @@
 !/win32.py
 !/.gitignore
 !/goal-loop.py
-
+!/scan.py
+!/pyproject.toml
+!/tests/
+!/tests/test_scan.py
+!/.vscode/
+!/.vscode/**
 !/start-fara-cuda.ps1
