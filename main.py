@@ -30,6 +30,7 @@ FARA_FACTOR = 32
 FARA_MIN_PIXELS, FARA_MAX_PIXELS = 256 * FARA_FACTOR ** 2, 4096 * FARA_FACTOR ** 2
 FARA_TARGET_WIDTH = int(E('TRIDENT_FARA_WIDTH', '1440'))
 FARA_MAX_TOKENS, FARA_TIMEOUT = int(os.environ.get('FARA_MAX_TOKENS', 2048)), 180
+ZOOM_SPAN, POINTER = int(E('TRIDENT_FARA_ZOOM', '250')), ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag')
 JOURNAL_HOST, JOURNAL_PORT = '0.0.0.0', 8765
 DETACHED = 0x00000008 | 0x00000200 | 0x08000000
 MINUTES = E('TRIDENT_MINUTES', '')
@@ -261,6 +262,13 @@ FARA_KEY = dict(control='ctrl', ctrl='ctrl', shift='shift', alt='alt', meta='win
 FARA_KEY['return'] = 'enter'
 FARA_KEY['del'] = 'del'
 FARA_KEY.update(super='win', cmd='win', command='win', option='alt', **{f'f{i}': f'f{i}' for i in range(1, 13)})
+def zoom_box(point, span=ZOOM_SPAN):
+    span = max(1, min(NORM, int(span))); l, t = (min(max(v - span // 2, 0), NORM - span) for v in point)
+    return [l, t, l + span, t + span]
+def zoom_crop(im, box):
+    w, h = im.size; crop = im.crop(tuple((v * (h if i % 2 else w) + NORM // 2) // NORM for i, v in enumerate(box)))
+    return crop.resize((FARA_TARGET_WIDTH, max(1, round(FARA_TARGET_WIDTH * crop.height / max(1, crop.width)))), Image.Resampling.LANCZOS)
+def zoom_back(box, q): return [max(0, min(NORM, box[i] + (q[i] * (box[i + 2] - box[i]) + NORM // 2) // NORM)) for i in (0, 1)]
 def fara_keys(names):
     out = []
     for name in names:
@@ -485,6 +493,16 @@ class Engine:
         point = fara_point(arguments)
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         return dict(capture=screen['id'], region=screen['region'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=fara_program(arguments, screen.get('size') or (0, 0)))
+    def _zoom(self, screen, q, coarse):
+        if coarse['action'] not in POINTER or not coarse['coordinate']: return dict(zoom=None)
+        z = dict(box=zoom_box(coarse['coordinate']), coarse=coarse['coordinate'], fine=None)
+        try:
+            with Image.open(screen['image']) as im: fine = self._eye(screen, fara_fit(zoom_crop(im.convert('RGB'), z['box'])), q)
+        except Exception as e: return dict(zoom=z | dict(error=repr(e)[:300]))
+        z |= dict(fine=fine['coordinate'], thoughts=fine['thoughts'])
+        if fine['action'] not in POINTER or not fine['coordinate']: return dict(zoom=z)
+        arguments = coarse['arguments'] | dict(action=fine['action'], coordinate=zoom_back(z['box'], fine['coordinate']))
+        return dict(zoom=z, action=fine['action'], arguments=arguments, coordinate=arguments['coordinate'], program=fara_program(arguments, screen.get('size') or (0, 0)))
     def _pinned_shot(self):
         pin = E('TRIDENT_RETINA_PIN')
         if not pin: return None
@@ -505,7 +523,7 @@ class Engine:
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
         """$CALL --retina "GOAL"
-        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had.
+        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had. "zoom GOAL" (also "bg zoom GOAL") asks again on a crop of the same capture around Fara's first point and returns that finer point plus zoom {box, coarse, fine}; use it for small targets such as icons, links, swatches and arrows.
         Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}. coordinate is the target point; program is a --hands program for the proposed action, yours to run, change or ignore. A short question ("What does the <window> say last?") comes back as action terminate with arguments.answer, sometimes only after a click it proposes first. Fara does not return lists or boxes: ask one goal or one fact per call, and get a region from two or more point goals or from Jev."""
         q = str(question).strip()
         if not q or q == 'bg': raise ValueError('retina needs a goal')
@@ -513,9 +531,12 @@ class Engine:
             q = q[3:].strip()
             if not q: raise ValueError('retina needs a goal')
             return self._retina_bg(q)
+        zoom = q.startswith('zoom ')
+        if zoom: q = q[5:].strip()
         pinned = self._pinned_shot()
         screen, image = pinned if pinned else self._shot()
         v = dict(task=q) | self._eye(screen, image, q)
+        if zoom: v |= self._zoom(screen, q, v)
         if not pinned: write('look.json', v)
         return v
     def jev(self, narrative, *blocks):
