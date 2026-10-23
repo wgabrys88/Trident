@@ -9,3 +9,5 @@
 !/skills/*.py
 !/tests/
 !/tests/*.py
+!/docs/
+!/docs/*.md
