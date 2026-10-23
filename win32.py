@@ -1,3 +1,8 @@
+"""The hand: Win32 input, capture and window queries through ctypes.
+
+main.py loads this file as a module and calls _setup_bindings() once. Every _do_* function takes points
+as "x,y" on 0-1000 of the region string ("NONE" or "left,top,right,bottom" on 0-1000 of the screen).
+"""
 import ctypes
 import ctypes.wintypes as W
 import struct
@@ -13,7 +18,6 @@ class Win32Config:
     drag_step_count: int = 25
     drag_step_delay: float = 0.016
     click_settle_delay: float = 0.03
-    key_settle_delay: float = 0.03
     type_inter_key_delay: float = 0.02
     type_down_delay: float = 0.01
     hotkey_inter_delay: float = 0.02
@@ -21,7 +25,6 @@ class Win32Config:
     double_click_inter: float = 0.05
     overlay_alpha: int = 90
     selector_min_size: int = 5
-    dpi_awareness: int = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,8 @@ class Win32Constants:
     transparent_bk: int = 1
     null_brush: int = 5
     error_class_already_exists: int = 1410
+    gwl_exstyle: int = -20
+    dwmwa_cloaked: int = 14
 
 
 EXTENDED_VKS: frozenset[int] = frozenset(
@@ -103,6 +108,7 @@ HMODULE = W.HANDLE
 _user32: ctypes.WinDLL = ctypes.WinDLL("user32", use_last_error=True)
 _gdi32: ctypes.WinDLL = ctypes.WinDLL("gdi32", use_last_error=True)
 _kernel32: ctypes.WinDLL = ctypes.WinDLL("kernel32", use_last_error=True)
+_dwmapi: ctypes.WinDLL = ctypes.WinDLL("dwmapi", use_last_error=True)
 
 
 def _err(msg: str) -> NoReturn:
@@ -222,6 +228,20 @@ def _setup_bindings() -> None:
     _user32.GetForegroundWindow.restype = W.HWND
     _user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
     _user32.GetWindowTextW.restype = ctypes.c_int
+    _user32.GetWindowTextLengthW.argtypes = [W.HWND]
+    _user32.GetWindowTextLengthW.restype = ctypes.c_int
+    _user32.IsWindowVisible.argtypes = [W.HWND]
+    _user32.IsWindowVisible.restype = W.BOOL
+    _user32.IsIconic.argtypes = [W.HWND]
+    _user32.IsIconic.restype = W.BOOL
+    _user32.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
+    _user32.GetWindowRect.restype = W.BOOL
+    _user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
+    _user32.GetWindowThreadProcessId.restype = W.DWORD
+    _user32.GetWindowLongW.argtypes = [W.HWND, ctypes.c_int]
+    _user32.GetWindowLongW.restype = W.LONG
+    _dwmapi.DwmGetWindowAttribute.argtypes = [W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD]
+    _dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
     _gdi32.CreateSolidBrush.argtypes = [W.DWORD]
     _gdi32.CreateSolidBrush.restype = W.HBRUSH
     _gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, W.DWORD]
@@ -259,18 +279,31 @@ def _screen_size() -> tuple[int, int]:
     return int(_user32.GetSystemMetrics(K.sm_cxscreen)), int(_user32.GetSystemMetrics(K.sm_cyscreen))
 
 
-def _do_windows() -> list[int]:
-    found: list[int] = []
-    proc = ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)(lambda hwnd, _: found.append(int(hwnd or 0)) is None)
-    _user32.EnumWindows(proc, 0)
+def _do_window_list() -> list[tuple[int, str, list[int], int, bool, bool, bool]]:
+    """Visible, uncloaked, titled top-level windows in z-order: (hwnd, title, box 0-1000, pid, minimized, topmost, foreground)."""
+    found: list[tuple[int, str, list[int], int, bool, bool, bool]] = []
+    front: int = int(_user32.GetForegroundWindow() or 0)
+    screen_w, screen_h = _screen_size()
+
+    def visit(hwnd: int, _: int) -> bool:
+        cloaked: W.DWORD = W.DWORD()
+        _dwmapi.DwmGetWindowAttribute(hwnd, K.dwmwa_cloaked, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+        length: int = _user32.GetWindowTextLengthW(hwnd)
+        if not _user32.IsWindowVisible(hwnd) or cloaked.value or not length:
+            return True
+        title = ctypes.create_unicode_buffer(length + 1)
+        _user32.GetWindowTextW(hwnd, title, length + 1)
+        rect: W.RECT = W.RECT()
+        _user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        pid: W.DWORD = W.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        box: list[int] = [rect.left * K.norm // screen_w, rect.top * K.norm // screen_h, rect.right * K.norm // screen_w, rect.bottom * K.norm // screen_h]
+        topmost: bool = bool(_user32.GetWindowLongW(hwnd, K.gwl_exstyle) & K.ws_ex_topmost)
+        found.append((int(hwnd or 0), title.value, box, int(pid.value), bool(_user32.IsIconic(hwnd)), topmost, int(hwnd or 0) == front))
+        return True
+
+    _user32.EnumWindows(ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)(visit), 0)
     return found
-
-
-def _do_foreground() -> tuple[int, str]:
-    hwnd = _user32.GetForegroundWindow()
-    title = ctypes.create_unicode_buffer(512)
-    _user32.GetWindowTextW(hwnd, title, len(title))
-    return int(hwnd or 0), title.value
 
 
 def _make_bmi(width: int, height: int) -> _BitmapInfo:
@@ -635,10 +668,6 @@ def _do_stroke(point_strs: list[str], region_str: str) -> None:
             time.sleep(CFG.drag_step_delay)
     time.sleep(CFG.click_settle_delay)
     _send_mouse(up | absolute, pixels[-1][0], pixels[-1][1])
-
-
-def _do_drag(from_pos_str: str, to_pos_str: str, region_str: str) -> None:
-    _do_stroke([from_pos_str, to_pos_str], region_str)
 
 
 def _do_cursor_pos(region_str: str) -> str:
