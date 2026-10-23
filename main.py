@@ -260,6 +260,7 @@ def fara_point(arguments):
 FARA_KEY = dict(control='ctrl', ctrl='ctrl', shift='shift', alt='alt', meta='win', win='win', windows='win', enter='enter', escape='esc', esc='esc', tab='tab', backspace='backspace', delete='del', arrowup='up', arrowdown='down', arrowleft='left', arrowright='right', up='up', down='down', left='left', right='right', pageup='pageup', pagedown='pagedown', space='space', home='home', end='end', insert='insert')
 FARA_KEY['return'] = 'enter'
 FARA_KEY['del'] = 'del'
+FARA_KEY.update(super='win', cmd='win', command='win', option='alt', **{f'f{i}': f'f{i}' for i in range(1, 13)})
 def fara_keys(names):
     out = []
     for name in names:
@@ -368,13 +369,16 @@ class Vision(Oracle):
     headers = {}
     def ask(self, text, image, origin):
         messages = [dict(role='system', content=FARA_SYSTEM), dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=text)])]
-        response = self.post(dict(model=VISION_MODEL, temperature=0, max_tokens=FARA_MAX_TOKENS, chat_template_kwargs=dict(enable_thinking=False), messages=messages), dict(question=text, image=origin, sent_size=list(image.size)))
+        return self.chat(messages, dict(question=text, image=origin, sent_size=list(image.size)))[0]
+    def chat(self, messages, shown):
+        """One Fara call on a whole conversation. Returns (reply text, response body)."""
+        response = self.post(dict(model=VISION_MODEL, temperature=0, max_tokens=FARA_MAX_TOKENS, chat_template_kwargs=dict(enable_thinking=False), messages=messages), shown)
         choice, message = response['choices'][0], response['choices'][0]['message']
         if choice.get('finish_reason') == 'length': raise ValueError(f'reply cut at {FARA_MAX_TOKENS} tokens')
         content, reasoning = (message.get('content') or '').strip(), (message.get('reasoning_content') or '').strip()
         if reasoning and reasoning not in content: content = f'{reasoning}\n{content}'.strip()
         if not content: raise ValueError('Fara tool_call expected')
-        return content
+        return content, response
 class Decision(Oracle):
     headers = property(lambda self: {'Authorization': 'Bearer ' + (ROOT.parent / '.env').read_text('utf-8-sig').strip().strip('"\'')})
     def ask(self, state, questions, shown):
@@ -610,6 +614,11 @@ class Engine:
         Takes a window handle from --windows and a 0-1000 screen box. Restores the window, moves it there and clears topmost.
         Returns {hwnd, box, moved, err}. Use it to lay windows side by side; capture afterwards."""
         return HAND()._do_place(hwnd, left, top, right, bottom)
+    def pilot(self, task='', steps=''):
+        """$CALL --pilot "TASK" [STEPS]
+        Takes a task for Fara and an optional action limit (default 30). Fara is the brain: Microsoft's Fara 1.5 loop (system prompt, screenshot + task, its own replies fed back, the 3 newest screenshots) drives the hand on the region until terminate, ask_user_question, an error, the stop file or the limit. Every step is journaled with its screenshot; the trace is shots/pilot_<run>.json.
+        Returns {task, status, actions, answer, facts, final, trace, journal}. The owner runs it to test Fara as the brain; it is not a mind tool."""
+        return module('trident_pilot', ROOT / 'pilot.py').run(self, sys.modules[__name__], task, steps)
     def stop(self, *_):
         """$CALL --stop
         Takes nothing. Ends the wake: writes the stop file, so the mind is stopped and the ledger is sealed.
@@ -621,7 +630,7 @@ class Engine:
         else: print(json.dumps(v, ensure_ascii=False), flush=True)
     def _mind_prompt(self, sentence, minutes, end):
         call = f"& '{VENV if VENV.is_file() else PYTHON}' '{SCRIPT}' --work '{self.work}'"
-        docs = [f.__doc__.replace('$CALL', call) for n, f in tools().items() if n != 'mind' and f.__doc__]
+        docs = [f.__doc__.replace('$CALL', call) for n, f in tools().items() if n not in ('mind', 'pilot') and f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
         return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory(self)['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
