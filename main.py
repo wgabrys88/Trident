@@ -83,7 +83,6 @@ FARA_TOOL = dict(
     )
 )
 FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
-FARA_LOOK = 'Name every window, dialog and overlay you see, then answer: '
 FARA_ACTIONS = FARA_TOOL['parameters']['properties']['action']['enum']
 CLI_CONFIG = dict(version=1, permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], deny=[]), sandbox=dict(mode='disabled'), approvalMode='unrestricted', autoAcceptWebSearch=True)
 _SERVED = False
@@ -255,10 +254,9 @@ def fara_call(raw):
 def fara_point(arguments):
     if 'coordinate' not in arguments: return None
     xy = arguments['coordinate']
-    if not (isinstance(xy, (list, tuple)) and len(xy) == 2): raise ValueError('bad box')
-    x, y = int(xy[0]), int(xy[1])
-    if not (0 <= x <= NORM and 0 <= y <= NORM): raise ValueError('box range')
-    return x, y
+    if isinstance(xy, str): xy = re.findall(r'-?\d+(?:\.\d+)?', xy)
+    if not (isinstance(xy, (list, tuple)) and len(xy) == 2): raise ValueError('bad point')
+    return tuple(max(0, min(NORM, int(round(float(v))))) for v in xy)
 FARA_KEY = dict(control='ctrl', ctrl='ctrl', shift='shift', alt='alt', meta='win', win='win', windows='win', enter='enter', escape='esc', esc='esc', tab='tab', backspace='backspace', delete='del', arrowup='up', arrowdown='down', arrowleft='left', arrowright='right', up='up', down='down', left='left', right='right', pageup='pageup', pagedown='pagedown', space='space', home='home', end='end', insert='insert')
 FARA_KEY['return'] = 'enter'
 FARA_KEY['del'] = 'del'
@@ -273,7 +271,7 @@ def fara_keys(names):
     return 'key ' + '+'.join(out)
 def fara_program(arguments, size=(0, 0)):
     action, point = arguments.get('action'), fara_point(arguments)
-    if action in ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag') and point is None: raise ValueError('bad box')
+    if action in ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag') and point is None: raise ValueError('bad point')
     if action == 'left_click': return f'click {point[0]} {point[1]}'
     if action == 'double_click': return f'dclick {point[0]} {point[1]}'
     if action == 'right_click': return f'rclick {point[0]} {point[1]}'
@@ -459,7 +457,7 @@ class Engine:
     def capture(self, *_):
         """$CALL --capture
         Takes nothing. Screenshots the region into shots/<id>.png and writes screen.json.
-        Returns {id, image, size, region, at}. Use it before you judge the screen and after you act; --retina and Jev boxes read the latest capture."""
+        Returns {id, image, size, region, at}. Use it before you judge the screen and after you act; --retina and Jev read the latest capture."""
         region = (self.work / 'region.txt').read_text('utf-8').strip()
         png = HAND()._do_capture(region, 0, 0, 1.0)
         shots = self.work / 'shots'; shots.mkdir(exist_ok=True)
@@ -502,18 +500,18 @@ class Engine:
             proc = subprocess.Popen([str(PYTHON), '-B', str(SCRIPT), '--work', str(self.work), '--retina', question], cwd=str(self.work), env=env, stdin=subprocess.DEVNULL, stdout=oh, stderr=eh, creationflags=DETACHED, close_fds=True)
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
-        """$CALL --retina "QUESTION"
-        Takes one question about the latest capture. Fara answers it fresh, with no memory of earlier questions; this is the only image-recognition tool. "bg QUESTION" returns at once and writes shots/retina-bg.json for the capture you had.
-        Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}; program is a --hands program for the proposed action, yours to run, change or ignore. Use it for every image question, one concrete question per call."""
+        """$CALL --retina "GOAL"
+        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had.
+        Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}. coordinate is the target point; program is a --hands program for the proposed action, yours to run, change or ignore. A short question ("What does the <window> say last?") comes back as action terminate with arguments.answer, sometimes only after a click it proposes first. Fara does not return lists or boxes: ask one goal or one fact per call, and get a region from two or more point goals or from Jev."""
         q = str(question).strip()
-        if not q or q == 'bg': raise ValueError('retina needs a question')
+        if not q or q == 'bg': raise ValueError('retina needs a goal')
         if q.startswith('bg '):
             q = q[3:].strip()
-            if not q: raise ValueError('retina needs a question')
+            if not q: raise ValueError('retina needs a goal')
             return self._retina_bg(q)
         pinned = self._pinned_shot()
         screen, image = pinned if pinned else self._shot()
-        v = dict(task=q) | self._eye(screen, image, FARA_LOOK + q)
+        v = dict(task=q) | self._eye(screen, image, q)
         if not pinned: write('look.json', v)
         return v
     def jev(self, narrative, *blocks):
@@ -678,7 +676,7 @@ LOOK FIRST. Before you plan, observe the sentence's subject: files and command o
 
 CHECKLIST. Split the sentence into numbered deliverables and keep them at the top of story.txt. A deliverable is met only when this wake showed the evidence. One you cannot meet stays not met; never redefine it into something easier.
 
-EYES. --retina is Fara, the only image-recognition tool. It names what is on the latest capture and proposes one action. It can miss a hidden window and can invent items; corroborate with --windows and, when it matters, by reading the capture. Points are 0-{norm} of the capture.
+EYES. --retina is Fara, the only image-recognition tool. Fara is a computer-use agent: give it one goal that names the window ("In the <window>, click the <target>") and it answers with one action whose coordinate is the target point, 0-{norm} of the capture. It does not list or box: never ask it for an inventory or a bounding box; ask one goal or one short fact per call. It grounds words on any matching text on screen, so name the window and describe the target visually. It can miss a hidden window and can invent items; corroborate with --windows and, when it matters, by reading the capture.
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 

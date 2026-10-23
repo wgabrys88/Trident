@@ -6,3 +6,5 @@
 !/pyproject.toml
 !/skills/
 !/skills/*.py
+!/tests/
+!/tests/*.py
