@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Trident. main.py is the mind, the eye, the watch and the tools. win32.py is the hand.
+"""Trident. main.py is the mind, the eye and the tools. win32.py is the hand.
 story.txt and ledger.md are memory. skills/*.py can add a tool. The brain defaults to
-grok-4.7-medium-fast. The pixel watch records changes and does not stop the hand.
+grok-4.7-medium-fast.
 """
-import argparse, ast, atexit, base64, ctypes, importlib.util, io, json, math, os, re, signal, socket, subprocess, sys, threading, time, traceback, urllib.parse, urllib.request, uuid, win32job
+import argparse, ast, atexit, base64, ctypes, importlib.util, io, json, math, os, re, signal, socket, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid, win32job
 from collections import Counter
 from contextlib import ExitStack, redirect_stdout
 from ctypes import wintypes
@@ -11,9 +11,12 @@ from dataclasses import InitVar, dataclass
 from functools import cached_property
 from pathlib import Path
 from PIL import Image
+try: import msvcrt
+except ImportError: msvcrt = None
 
 sys.dont_write_bytecode = True
 SCRIPT, ROOT, PYTHON, E = Path(__file__).resolve(), Path(__file__).resolve().parent, Path(sys.executable), os.environ.get
+VENV = ROOT / '.venv' / 'Scripts' / 'python.exe'
 NVIDIA_HOST = '192.168.16.31'
 DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14-20261014')
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
@@ -22,7 +25,6 @@ VISION_MODEL = E('TRIDENT_VISION_MODEL', 'retina')
 BRAIN = 'grok-4.7-medium-fast'
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.md')
-if sys.stdout.isatty(): os.environ.setdefault('TRIDENT_CONSOLE', str(os.getpid()))
 NORM, SCREENSHOT_DELAY = 1000, float(E('TRIDENT_SHOT_DELAY', '1.5'))
 FARA_FACTOR = 32
 FARA_MIN_PIXELS, FARA_MAX_PIXELS = 256 * FARA_FACTOR ** 2, 4096 * FARA_FACTOR ** 2
@@ -36,11 +38,53 @@ RECALL_RUNS, RECALL_CHARS = 5, 800
 WAKE, WAKE_ID = re.compile(r'(?m)^## wake '), os.environ['TRIDENT_RUN']
 JEV_USAGE = '--jev "NARRATIVE" "QUESTION" ["QUESTION" ...], each QUESTION one of: "name?Claim" (yes/no), "name?Q|true=Yes|false=No", "name?Q|a=Option|b=Option" (choice), "name#Q|Level1|Level2" (score), "name@target in the current capture" (box)'
 CHANGE_APPROACH = 'Keep the goal. This way is not working. Switch to a different strategy and continue.'
-GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste', 'expect'))
-FARA_ACTIONS = ['key', 'type', 'mouse_move', 'left_click', 'left_click_drag', 'right_click', 'double_click', 'triple_click', 'scroll', 'hscroll', 'visit_url', 'history_back', 'web_search', 'read_page_answer_question', 'pause_and_memorize_fact', 'ask_user_question', 'wait', 'terminate']
-FARA_TOOL = dict(name='computer_use', description=f'One pointer or key action on a desktop of {NORM}x{NORM}. Aim at the center of a control.', parameters=dict(type='object', required=['action'], properties=dict(
-    action=dict(type='string', enum=FARA_ACTIONS), keys=dict(type='array'), text=dict(type='string'), coordinate=dict(type='array'), pixels=dict(type='number'), url=dict(type='string'), query=dict(type='string'), fact=dict(type='string'), question=dict(type='string'), time=dict(type='number'), answer=dict(type='string'))))
-FARA_SYSTEM = 'You are Fara, a vision model. You see one desktop screenshot. Name only the windows, dialogs and overlays that are actually visible, then answer the question. Do not invent controls, menus, or text. Coordinates are 0-1000 of the image.\n\nAnswer from the pixels. If the question is broad, answer the visible part in a few sentences and still emit one tool call. Use action terminate with the answer when no click is required.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL)) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
+GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
+FARA_IDENTITY = '''You are Fara, a computer use agent (CUA) specialized for web browsers. You are developed by Microsoft AI Frontiers. You assist users with completing and automating tasks that require the use of a web browser.
+
+The model was trained in the timeframe of January - April 2026. You can effectively perform tasks even beyond this range by accessing the web browser and using the latest information on the live web. But your knowledge cutoff is limited to early 2026, so you may not be aware of events or developments that occurred after that time, without explicitly browsing and searching for latest information on the web.
+
+This edition of the model was trained using SFT on top of Qwen3.5-9B, using a synthetic data mixture generated and developed by Microsoft AI Frontiers.'''
+
+FARA_CRITICAL = '''A critical point is a situation where we must pause and request information or confirmation from the user before proceeding. There are three types:
+
+Case 1: Missing User Information — The task requires personal information that the user has not provided (e.g., email, phone number, address, payment details). Never fabricate or assume personal information. Fill in only what the user has explicitly provided, then pause and ask for any missing required fields. (e.g., form requires phone number but user only gave name and email -> fill name and email, then ask for phone number.) If the user has provided all required information, proceed without stopping.
+
+Case 2: Underspecified Task — The task description is ambiguous or missing details needed to make a decision at the current step. Pause and ask for clarification. (e.g., user asks to book a flight but doesn't specify destination -> ask for destination.) If the user's instructions contain all information needed for the current decision, proceed without stopping.
+
+Case 3: Irreversible Action — We are about to perform an action that cannot be undone (e.g., submitting a form, completing a purchase, sending a message, deleting data). If the user explicitly authorized the action (e.g., "submit the form", "complete the purchase", "you have my permission to submit") -> proceed without stopping. If the user did NOT explicitly authorize the action -> stop and ask for confirmation. (e.g., "fill out a form" with no mention of submitting -> fill the form, then ask before submitting; "fill out and submit a form" -> fill and submit without stopping.)
+
+Only stop at a critical point if (1) required information is missing, (2) the task is ambiguous, OR (3) an irreversible action lacks explicit user authorization. If the user has provided all necessary information AND explicitly authorized the action, proceed without interruption.'''
+
+FARA_TOOL = dict(
+    name='computer_use',
+    description=f'''Use a mouse and keyboard to interact with a computer, and take screenshots.
+* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.
+* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots to see the results of your actions. E.g. if you click on Firefox and a window doesn't open, try wait and taking another screenshot.
+* The screen's resolution is {NORM}x{NORM}.
+* Whenever you intend to move the cursor to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.
+* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your cursor position so that the tip of the cursor visually falls on the element that you want to click.
+* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges.''',
+    parameters=dict(
+        properties=dict(
+            action=dict(type='string', description='The action to perform. The available actions are:\n* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order. Includes "Enter", "Alt", "Shift", "Tab", "Control", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Shift", etc.\n* `type`: Type a string of text on the keyboard.\n* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\n* `left_click`: Click the left mouse button.\n* `double_click`: Double-click the left mouse button.\n* `right_click`: Click the right mouse button.\n* `triple_click`: Triple-click the left mouse button (e.g. to select a line of text).\n* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\n* `scroll`: Performs a scroll of the mouse scroll wheel.\n* `hscroll`: Performs a horizontal scroll (mapped to regular scroll).\n* `visit_url`: Visit a specified URL.\n* `history_back`: Go back to the previous page in the browser history.\n* `web_search`: Perform a web search with a specified query.\n* `read_page_answer_question`: Read the current page content and answer a question about it.\n* `pause_and_memorize_fact`: Pause and memorize a fact for future reference.\n* `ask_user_question`: Ask the user a clarifying question and wait for a response.\n* `wait`: Wait specified seconds for the change to happen.\n* `terminate`: Terminate the current task and provide the final answer.', enum=['key','type','mouse_move','left_click','left_click_drag','right_click','double_click','triple_click','scroll','hscroll','visit_url','history_back','web_search','read_page_answer_question','pause_and_memorize_fact','ask_user_question','wait','terminate']),
+            keys=dict(type='array', description='Required only by `action=key`.'),
+            text=dict(type='string', description='Required only by `action=type`.'),
+            coordinate=dict(type='array', description='(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates to move the mouse to. Required by `action=left_click`, `action=double_click`, `action=right_click`, `action=triple_click`, `action=left_click_drag`, and `action=mouse_move`.'),
+            pixels=dict(type='number', description='The amount of scrolling to perform. Positive values scroll up, negative values scroll down. Required only by `action=scroll` and `action=hscroll`.'),
+            url=dict(type='string', description='The URL to visit. Required only by `action=visit_url`.'),
+            query=dict(type='string', description='The query to search for. Required only by `action=web_search`.'),
+            fact=dict(type='string', description='The fact to remember for the future. Required only by `action=pause_and_memorize_fact`.'),
+            question=dict(type='string', description='The question to ask. Required by `action=read_page_answer_question` and `action=ask_user_question`.'),
+            time=dict(type='number', description='The seconds to wait. Required only by `action=wait`.'),
+            answer=dict(type='string', description='The final answer for the task. Required only by `action=terminate`.')
+        ),
+        required=['action'],
+        type='object'
+    )
+)
+FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
+FARA_LOOK = 'Name every window, dialog and overlay you see, then answer: '
+FARA_ACTIONS = FARA_TOOL['parameters']['properties']['action']['enum']
 CLI_CONFIG = dict(version=1, permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], deny=[]), sandbox=dict(mode='disabled'), approvalMode='unrestricted', autoAcceptWebSearch=True)
 _SERVED = False
 
@@ -51,9 +95,6 @@ def text(p, v):
     log('file', dict(path=str(p), text=v if len(v) <= 4000 else '', size=len(v)))
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
-def scan_state(work):
-    try: return json.loads((Path(work) / 'scan.json').read_text('utf-8'))
-    except (OSError, json.JSONDecodeError): return {}
 def clock():
     if not E('TRIDENT_START'): return {}
     now = time.time()
@@ -67,17 +108,34 @@ def words(message):
     if isinstance(content, str): return content
     if isinstance(content, list): return ''.join(p.get('text', '') if isinstance(p, dict) else str(p) for p in content)
     return '' if content is None else str(content)
+def reply(body):
+    """The answer inside a Retina or Jev response body."""
+    if isinstance(body, dict) and body.get('choices'): return words((body['choices'][0] or {}).get('message'))
+    if isinstance(body, dict) and 'answers' in body: return json.dumps(body['answers'], ensure_ascii=False)
+    return json.dumps(body, ensure_ascii=False, default=str)
+THOUGHT = []
 def narrate(kind, data):
-    now = time.strftime('%H:%M:%S')
+    """Journal rows for one event; thinking deltas are held and written as one think row before the next event."""
+    try: event = json.loads(data) if kind == 'agent' else None
+    except json.JSONDecodeError: event = None
+    if isinstance(event, dict) and event.get('type') == 'thinking':
+        if event.get('subtype') == 'delta': THOUGHT.append(event.get('text') or '')
+        return []
+    now, thought = time.strftime('%H:%M:%S'), ''.join(THOUGHT).strip()[:3000]
+    THOUGHT.clear()
+    return ([dict(t=now, kind='think', text=thought)] if thought else []) + event_rows(now, kind, data, event)
+def event_rows(now, kind, data, event):
+    if kind == 'resp': return [dict(t=now, kind=kind, text=f"{data.get('url')}\n{reply(data.get('body'))}"[:4000])]
     if kind != 'agent':
         if isinstance(data, dict):
             shown = data.get('text', json.dumps({k: v for k, v in data.items() if k != 'body'}, default=str))
             return [dict(t=now, kind=kind, text=str(shown)[:2000])]
         return [dict(t=now, kind=kind, text=str(data)[:2000])]
-    try: event = json.loads(data)
-    except json.JSONDecodeError: return [dict(t=now, kind='agent', text=str(data)[:2000])]
+    if not isinstance(event, dict): return [dict(t=now, kind='agent', text=str(data)[:2000])]
     typ, sub = event.get('type'), event.get('subtype')
-    if typ == 'thinking': return []
+    if typ == 'user':
+        said = words(event.get('message')); cut = said.rfind('\n\nSENTENCE\n\n')
+        return [dict(t=now, kind='user', text=(said[cut + 2:] if cut >= 0 else said)[:4000])]
     if typ == 'assistant':
         said = words(event.get('message'))
         return [dict(t=now, kind='say', text=said[:4000])] if said else []
@@ -98,7 +156,14 @@ def log(kind, data):
     serve()
     blob = b''.join(render(item) for item in narrate(kind, data))
     if not blob: return
-    with open(RUN, 'ab') as handle: handle.write(blob)
+    with open(RUN, 'ab') as handle:
+        locked = False
+        if msvcrt:
+            try: handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1); locked = True
+            except OSError: pass
+        try: handle.write(blob); handle.flush()
+        finally:
+            if locked: handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     if sys.stdout.isatty():
         sys.stdout.buffer.write(blob); sys.stdout.buffer.flush()
 def _journal_target():
@@ -318,11 +383,10 @@ class Decision(Oracle):
         return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(state=shown, questions=questions))
 
 class Hand:
-    """Desktop API for --hands. Points are 0-1000 of the region. The watch does not stop these acts."""
+    """Desktop API for --hands. Points are 0-1000 of the region."""
     def __init__(self, work): self.work = work
     region = property(lambda self: (self.work / 'region.txt').read_text('utf-8').strip())
     w = property(lambda self: HAND())
-    def expect(self, l, t, r, b, seconds=8): return dict(expect=[float(l), float(t), float(r), float(b)])
     def _pair(self, x, y): return f'{int(round(float(x)))},{int(round(float(y)))}'
     def position(self): return tuple(map(int, self.w._do_cursor_pos(self.region).split(',')))
     def moveTo(self, x, y, duration=0):
@@ -383,7 +447,8 @@ class Engine:
         with open(self.edit_log, 'a', encoding='utf-8') as handle: handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {path} {note}\n")
     def region(self, value=''):
         """$CALL --region [NONE|LEFT,TOP,RIGHT,BOTTOM]
-        Sets the rectangle for capture, retina and hands, on the 0-1000 screen. NONE is the full screen. With no value a selector opens."""
+        Takes NONE (the full screen, the default) or a box on the 0-1000 screen; with no value a selector opens for the owner (drag a box, right-click for the full screen, Escape cancels). --capture, --retina and --hands then work in it, and --hands points are 0-1000 of it.
+        Returns {region}. Use it to zoom the eye on a small area."""
         if not value:
             value, code = HAND()._do_select_region()
             if code: raise SystemExit(code)
@@ -393,7 +458,8 @@ class Engine:
         text(self.work / 'region.txt', value); return dict(region=value)
     def capture(self, *_):
         """$CALL --capture
-        Takes a screenshot of the region into shots/<id>.png and writes screen.json. Returns {id, image, size, region, at}."""
+        Takes nothing. Screenshots the region into shots/<id>.png and writes screen.json.
+        Returns {id, image, size, region, at}. Use it before you judge the screen and after you act; --retina and Jev boxes read the latest capture."""
         region = (self.work / 'region.txt').read_text('utf-8').strip()
         png = HAND()._do_capture(region, 0, 0, 1.0)
         shots = self.work / 'shots'; shots.mkdir(exist_ok=True)
@@ -402,30 +468,10 @@ class Engine:
         with Image.open(io.BytesIO(png)) as im: size = list(im.size)
         v = dict(id=sid, image=str(path), size=size, region=region, at=round(time.time(), 3))
         write('screen.json', v); return v
-    def scan(self, *_):
-        """$CALL --scan
-        Starts the pixel watch if it is stale. The watch records changes and does not stop the hand. Returns {kind, grid, samples, rhythmic, alerts, at, pid, skipped, err}."""
-        py = self.work / '.venv' / 'Scripts' / 'pythonw.exe'
-        if not py.is_file(): raise SystemExit('scan needs .venv')
-        state, err = scan_state(self.work), self.work / 'scan.err'
-        crash = dict(err=err.read_text('utf-8')[-2000:]) if err.exists() else {}
-        if time.time() - float(state.get('at') or 0) > 1.5:
-            (self.work / 'scan.stop').unlink(missing_ok=True)
-            subprocess.Popen([str(py), '-B', str(SCRIPT), '--watch'], cwd=str(self.work), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACHED, close_fds=True)
-            for _ in range(40):
-                time.sleep(0.25); state = scan_state(self.work)
-                if time.time() - float(state.get('at') or 0) <= 1.5: break
-        keys = ('kind', 'grid', 'samples', 'rhythmic', 'alerts', 'at', 'pid', 'skipped')
-        return {k: state.get(k) for k in keys} | crash
-    def _unscan(self):
-        pid = self.work / 'scan.pid'
-        if not pid.exists(): return
-        (self.work / 'scan.stop').touch(); deadline = time.time() + 3
-        while pid.exists() and time.time() < deadline: time.sleep(0.1)
-        log('scan', dict(stopped=not pid.exists()))
     def windows(self, *_):
         """$CALL --windows
-        Lists visible titled top-level windows, top of the z-order first. Returns {windows: [{hwnd, title, box, pid, minimized, topmost, foreground}]}."""
+        Takes nothing. Lists visible, uncloaked, titled top-level windows, top of the z-order first.
+        Returns {windows: [{hwnd, title, box (0-1000 of the screen), pid, minimized, topmost, foreground}]}. Use it to corroborate Retina, above all for a window hidden behind or over another, and to get the hwnd for --place."""
         return dict(windows=[dict(zip(('hwnd', 'title', 'box', 'pid', 'minimized', 'topmost', 'foreground'), item)) for item in HAND()._do_window_list()])
     def _shot(self):
         screen = self.screen
@@ -457,7 +503,8 @@ class Engine:
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
         """$CALL --retina "QUESTION"
-        Fara answers one fresh question about the latest capture. This is the only image-recognition tool. Prefix with "bg " to return at once and write shots/retina-bg.json. Returns {task, capture, thoughts, action, coordinate, program}."""
+        Takes one question about the latest capture. Fara answers it fresh, with no memory of earlier questions; this is the only image-recognition tool. "bg QUESTION" returns at once and writes shots/retina-bg.json for the capture you had.
+        Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}; program is a --hands program for the proposed action, yours to run, change or ignore. Use it for every image question, one concrete question per call."""
         q = str(question).strip()
         if not q or q == 'bg': raise ValueError('retina needs a question')
         if q.startswith('bg '):
@@ -466,12 +513,13 @@ class Engine:
             return self._retina_bg(q)
         pinned = self._pinned_shot()
         screen, image = pinned if pinned else self._shot()
-        v = dict(task=q) | self._eye(screen, image, q + ' Name only real windows, then terminate with the answer unless a click is required.')
+        v = dict(task=q) | self._eye(screen, image, FARA_LOOK + q)
         if not pinned: write('look.json', v)
         return v
     def jev(self, narrative, *blocks):
-        """$CALL --jev "NARRATIVE" "QUESTION" ...
-        Asks Jev typed questions. He also receives story.txt, ledger.md and goal.txt, and the capture when a question asks for a box. Every choice includes change_approach. Returns his answers and a summary."""
+        """$CALL JEV_USAGE
+        Takes a neutral narrative and typed questions. Jev also receives story.txt, ledger.md and goal.txt; a box question also receives the current capture.
+        Returns his answers with probabilities and confidence and a summary line per question; a box is left top right bottom on 0-1000 of the capture. Every choice includes change_approach. Use it before a decision with two or more ways, to locate a target, and before you claim done."""
         if not str(narrative).strip() or not blocks: raise ValueError(JEV_USAGE)
         q, state = questions(blocks), ['STORY: ' + self.story_path.read_text('utf-8'), 'LEDGER: ' + self.ledger_path.read_text('utf-8'), 'WHY: ' + narrative, 'GOAL: ' + self.goal.read_text('utf-8')]
         shown, sx, sy = list(state), 1, 1
@@ -498,7 +546,6 @@ class Engine:
                 verb, _, rest = cmd.partition(' ')
                 if verb == 'key': d.key(rest)
                 elif verb == 'wait': time.sleep(max(0, float(rest)))
-                elif verb == 'expect': d.expect(*map(float, rest.split()))
                 elif verb == 'scroll':
                     n, *at = rest.split(); d.scroll(int(n), *map(float, at))
                 elif verb in ('wheel', 'hwheel'):
@@ -515,23 +562,25 @@ class Engine:
                 else: raise ValueError(f'unknown {verb}')
     def hands(self, src):
         """$CALL --hands "PROGRAM"
-        Runs gesture lines or Python on the desktop, then waits and captures. The watch does not stop the program. expect is accepted and does not gate. Python receives desktop, read, time, json and Path."""
-        d, state = self.desktop, scan_state(self.work)
-        watch = 'off' if not state else 'live' if time.time() - float(state.get('at') or 0) <= 1.5 else 'stale'
+        Takes gesture lines (click x y, rclick x y, dclick x y, tclick x y, move x y, drag x y x y ..., scroll n [x y], wheel n [x y], hwheel n [x y], key ctrl+s, type TEXT, paste TEXT, wait SECONDS; ; joins commands on one line) or Python with desktop (click, rightClick, doubleClick, moveTo, drag, key, type_text, paste, scroll, wheel, position), read, time, json and Path. Points are 0-1000 of the region.
+        Runs it, waits, then captures. Returns the capture plus {stdout}. Use it for every mouse and keyboard act, then look at the capture."""
+        d = self.desktop
         with redirect_stdout(io.StringIO()) as out:
             head = src.split(None, 1)[0] if src.strip() else ''
             if head in GESTURES: self._gestures(src)
             elif head: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json, Path=Path))
         time.sleep(SCREENSHOT_DELAY)
-        v = self.capture() | dict(stdout=out.getvalue(), watch=watch, cleared=[])
+        v = self.capture() | dict(stdout=out.getvalue())
         write('screen.json', v); return v
     def story(self, narrative):
         """$CALL --story "TEXT"
-        Replaces story.txt with TEXT. Returns {story_len}."""
+        Takes the whole new story.txt: your checklist and notes, read by you and by Jev in this and the next wake.
+        Returns {story_len}. Use it whenever the checklist or notes change; shorten it by writing it whole again."""
         text(self.story_path, narrative); self._log_edit('story.txt', 'rewrite'); return dict(story_len=len(narrative))
     def ledger(self, lesson):
         """$CALL --ledger "LESSON"
-        Writes this wake's lesson (1-1200 characters). A later call replaces it. Returns {wakes, lesson_len}."""
+        Takes this wake's lesson, 1-1200 characters: what worked, what failed, what to do first next time. A later call replaces it. At wake end Trident adds the minutes used and how the wake ended, keeps the last 12 wakes and shows them to the next wake and to Jev.
+        Returns {wakes, lesson_len}. Call it at the end of every wake."""
         if not E('TRIDENT_START'): raise SystemExit('the ledger is written inside a wake')
         lesson = WAKE.sub('', str(lesson)).strip()
         if not 0 < len(lesson) <= LEDGER_LESSON: raise ValueError(f'a lesson has 1-{LEDGER_LESSON} characters; write it shorter')
@@ -550,32 +599,37 @@ class Engine:
         self._enter(start, minutes, HALT.get('reason') or ('stopped' if self.sentinel.exists() else 'ended'), lesson)
     def recall(self, *_):
         """$CALL --recall
-        Digests up to 5 earlier journals, never this one. Returns {wakes: [{run, span, sentence, calls, errors, final}]}."""
+        Takes nothing. Digests the journals of up to 5 earlier wakes, never this one.
+        Returns {wakes: [{run, span, sentence, calls, errors, final}]}. Use it when the ledger is not enough."""
         return dict(wakes=[digest(p) for p in sorted(ROOT.glob('run_*.md')) if p != RUN][-RECALL_RUNS:])
     def learn(self, *_):
         """$CALL --learn
-        Summarizes earlier journals as call counts and errors, never this one. Returns {wakes, errors, calls, dominant, text}. It quotes no sentence."""
+        Takes nothing. Totals the tool calls and errors of up to 5 earlier journals, never this one.
+        Returns {wakes, errors, calls, dominant, text}. Use it to see where earlier wakes spent their calls."""
         return trajectory(self)
     def place(self, hwnd, left, top, right, bottom):
         """$CALL --place HWND LEFT TOP RIGHT BOTTOM
-        Moves that window to a 0-1000 screen box and restores it. Returns {hwnd, box, moved}. Capture afterwards."""
+        Takes a window handle from --windows and a 0-1000 screen box. Restores the window, moves it there and clears topmost.
+        Returns {hwnd, box, moved, err}. Use it to lay windows side by side; capture afterwards."""
         return HAND()._do_place(hwnd, left, top, right, bottom)
     def stop(self, *_):
         """$CALL --stop
-        Ends the wake: writes the stop file, so the mind is stopped, the watch ends and the ledger is sealed."""
+        Takes nothing. Ends the wake: writes the stop file, so the mind is stopped and the ledger is sealed.
+        Returns nothing; the call exits. Use it when the sentence is done or cannot be done."""
         self.sentinel.touch(); log('file', dict(path=str(self.sentinel), text='')); sys.exit(0)
     def _emit(self, name, v):
         v = v | clock(); write(self.result, v)
         if sys.stdout.isatty(): log(name, v)
         else: print(json.dumps(v, ensure_ascii=False), flush=True)
     def _mind_prompt(self, sentence, minutes, end):
-        call = "& '.\\.venv\\Scripts\\python.exe' '.\\main.py' --work ."
+        call = f"& '{VENV if VENV.is_file() else PYTHON}' '{SCRIPT}' --work '{self.work}'"
         docs = [f.__doc__.replace('$CALL', call) for n, f in tools().items() if n != 'mind' and f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
         return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory(self)['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
         """$CALL --mind "SENTENCE" [MINUTES]
-        Wakes a new agent process on SENTENCE. It does not pass --resume or --continue. The model is brain_model(sentence)."""
+        Takes the owner sentence and an optional budget in minutes (or TRIDENT_MINUTES). Writes goal.txt and prompt.txt and spawns a new Cursor CLI agent in a job object on brain_model(sentence), never with --resume or --continue.
+        Returns nothing; the journal shows the wake and the ledger is sealed at its end. Use it to start a wake; the owner runs it."""
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
         if str(sentence).strip(): text(self.goal, str(sentence).strip())
@@ -601,18 +655,18 @@ class Engine:
             limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
             win32job.AssignProcessToJobObject(job, int(p._handle))
-            stack.callback(job.Close); stack.callback(self._unscan)
-            def watch():
+            stack.callback(job.Close)
+            def on_stop():
                 while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
                 p.kill()
-            threading.Thread(target=watch, daemon=True).start()
+            threading.Thread(target=on_stop, daemon=True).start()
             for raw in p.stdout:
                 line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
                 try: finished = json.loads(line).get('type') == 'result'
                 except json.JSONDecodeError: finished = False
                 if finished: p.kill(); break
 
-MIND = '''You are Trident, a living program. Your body is this directory: main.py holds your tools and your watch, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill and bring it into main.py when it is what you are. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
+MIND = '''You are Trident, a living program. Your body is this directory: main.py holds your tools, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill and bring it into main.py when it is what you are. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
 
 WORK IN SHORT LOOPS. Make your first tool call before any long reasoning. Probe, measure, adjust.
 
@@ -620,24 +674,25 @@ TIME. {budget} Every tool result carries clock.used, and clock.left when the wak
 
 MEMORY. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself.
 
-LOOK FIRST. Before you plan, observe the sentence's subject: files and command output for file work; --scan, --capture, --retina and --windows for the screen. Trust this wake's observations.
+LOOK FIRST. Before you plan, observe the sentence's subject: files and command output for file work; --capture, --retina and --windows for the screen. Trust this wake's observations.
 
-CHECKLIST. Split the sentence into numbered deliverables and keep them at the top of story.txt. A deliverable is met only when this wake showed the evidence. One you cannot meet stays not met.
+CHECKLIST. Split the sentence into numbered deliverables and keep them at the top of story.txt. A deliverable is met only when this wake showed the evidence. One you cannot meet stays not met; never redefine it into something easier.
 
 EYES. --retina is Fara, the only image-recognition tool. It names what is on the latest capture and proposes one action. It can miss a hidden window and can invent items; corroborate with --windows and, when it matters, by reading the capture. Points are 0-{norm} of the capture.
 
-JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
+JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
-THE HAND AND THE WATCH. --scan records pixel changes until the wake ends and does not stop the hand. Capture after you act. Trident stops the watch when the wake ends. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless TRIDENT_MODEL is set or the sentence names a grok-4.7 slug.
+THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless TRIDENT_MODEL is set or the sentence names a grok-4.7 slug.
 
 EVOLVE. You may change your own source. When a tool fails, fix it or grow skills/NAME.py defining NAME(engine, *args) whose docstring starts with $CALL --NAME. Keep the body small.
 
-HONESTY. Report what you observed. When you change something outside the body, say so in story.txt and in the final report.
+HONESTY. Report what you observed. Never call something validated, ready or running without evidence of this wake. When you change something outside the body, say so in story.txt and in the final report.
 
 FINISH. Observe again, grade each deliverable met, partial, or not met with evidence, report output, trajectory, and minutes, then --ledger one lesson.
 
 The ledger and your tools follow.'''
 
+Engine.jev.__doc__ = Engine.jev.__doc__.replace('JEV_USAGE', JEV_USAGE)
 def tools():
     return {n: f for n, f in vars(Engine).items() if callable(f) and not n.startswith('_') and not isinstance(f, (property, cached_property))}
 def grow(folder):
@@ -662,55 +717,16 @@ def _on_signal(signum, _frame):
 def install_halt():
     signal.signal(signal.SIGINT, _on_signal)
     if hasattr(signal, 'SIGBREAK'): signal.signal(signal.SIGBREAK, _on_signal)
-def watch_loop():
-    """Background sampler. Writes scan.json. Does not gate the hand. scan.stop ends it."""
-    pid_path, out, stop, err = ROOT / 'scan.pid', ROOT / 'scan.json', ROOT / 'scan.stop', ROOT / 'scan.err'
-    try: fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        try: old = int(pid_path.read_text('utf-8').strip() or '0')
-        except (OSError, ValueError): old = 0
-        if old and alive(old): return
-        try: pid_path.unlink()
-        except OSError: return
-        try: fd = os.open(pid_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError: return
-    os.write(fd, str(os.getpid()).encode()); os.close(fd)
-    stop.unlink(missing_ok=True); err.unlink(missing_ok=True)
-    prev, alerts = None, []
-    try:
-        HAND()
-        while not stop.exists():
-            started = time.perf_counter()
-            raw, w, h = HAND()._capture_full_screen()
-            pix = list(Image.frombytes('RGBA', (w, h), raw, 'raw', 'BGRA').convert('L').resize((80, 45)).getdata())
-            if prev is not None:
-                changed = [i for i, (a, b) in enumerate(zip(prev, pix)) if abs(a - b) >= 8]
-                if len(changed) >= 6:
-                    xs, ys = [i % 80 for i in changed], [i // 80 for i in changed]
-                    alerts = (alerts + [dict(box=[min(xs) * 1000 // 80, min(ys) * 1000 // 45, (max(xs) + 1) * 1000 // 80, (max(ys) + 1) * 1000 // 45], cells=len(changed), at=round(time.time(), 3))])[-16:]
-            prev = pix
-            payload = dict(kind='live' if prev else 'warming', grid=[80, 45], samples=1 if prev else 0, rhythmic=[], alerts=alerts, at=round(time.time(), 3), pid=os.getpid(), skipped=0)
-            tmp = out.with_suffix('.tmp')
-            try:
-                tmp.write_text(json.dumps(payload), encoding='utf-8'); tmp.replace(out)
-            except OSError: pass
-            left = 0.25 - (time.perf_counter() - started)
-            if left > 0: time.sleep(left)
-    except Exception:
-        err.write_text(traceback.format_exc(), encoding='utf-8'); raise
-    finally:
-        pid_path.unlink(missing_ok=True); stop.unlink(missing_ok=True)
 def main():
     ctypes.WinDLL('shcore', use_last_error=True).SetProcessDpiAwareness(2)
     install_halt()
     parser = argparse.ArgumentParser(add_help=False)
     group = parser.add_mutually_exclusive_group()
     for name in tools(): group.add_argument('--' + name, dest='entry', action='store_const', const=name)
-    for flag in ('--fresh', '--journal', '--watch'): parser.add_argument(flag, action='store_true')
+    for flag in ('--fresh', '--journal'): parser.add_argument(flag, action='store_true')
     parser.add_argument('--work', default=str(ROOT)); parser.add_argument('args', nargs='*')
     a = parser.parse_args()
     if a.journal: journal_serve(); return
-    if a.watch: watch_loop(); return
     if not a.entry: parser.error('need a tool flag')
     serve()
     started = time.time()

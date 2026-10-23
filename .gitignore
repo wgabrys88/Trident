@@ -1,12 +1,8 @@
 *
 !/main.py
 !/win32.py
-!/scan.py
 !/README.md
 !/.gitignore
 !/pyproject.toml
-!/tests/
-!/tests/test_scan.py
-!/tests/test_hand.py
 !/skills/
 !/skills/*.py
