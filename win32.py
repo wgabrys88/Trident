@@ -149,111 +149,70 @@ class _WndClassExW(ctypes.Structure):
     ]
 
 
+def _bind(dll, rows):
+    for name, args, rest in rows:
+        fn = getattr(dll, name)
+        fn.argtypes, fn.restype = args, rest
+
 def _setup_bindings() -> None:
-    _user32.GetDC.argtypes = [W.HWND]
-    _user32.GetDC.restype = W.HDC
-    _user32.ReleaseDC.argtypes = [W.HWND, W.HDC]
-    _user32.ReleaseDC.restype = ctypes.c_int
-    _user32.GetSystemMetrics.argtypes = [ctypes.c_int]
-    _user32.GetSystemMetrics.restype = ctypes.c_int
-    _gdi32.CreateCompatibleDC.argtypes = [W.HDC]
-    _gdi32.CreateCompatibleDC.restype = W.HDC
-    _gdi32.CreateDIBSection.argtypes = [W.HDC, ctypes.c_void_p, W.UINT, ctypes.POINTER(ctypes.c_void_p), W.HANDLE, W.DWORD]
-    _gdi32.CreateDIBSection.restype = W.HBITMAP
-    _gdi32.SelectObject.argtypes = [W.HDC, W.HGDIOBJ]
-    _gdi32.SelectObject.restype = W.HGDIOBJ
-    _gdi32.BitBlt.argtypes = [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HDC, ctypes.c_int, ctypes.c_int, W.DWORD]
-    _gdi32.BitBlt.restype = W.BOOL
-    _gdi32.StretchBlt.argtypes = [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.DWORD]
-    _gdi32.StretchBlt.restype = W.BOOL
-    _gdi32.SetStretchBltMode.argtypes = [W.HDC, ctypes.c_int]
-    _gdi32.SetStretchBltMode.restype = ctypes.c_int
-    _gdi32.SetBrushOrgEx.argtypes = [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p]
-    _gdi32.SetBrushOrgEx.restype = W.BOOL
-    _gdi32.DeleteObject.argtypes = [W.HGDIOBJ]
-    _gdi32.DeleteObject.restype = W.BOOL
-    _gdi32.DeleteDC.argtypes = [W.HDC]
-    _gdi32.DeleteDC.restype = W.BOOL
-    _user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
-    _user32.SetCursorPos.restype = W.BOOL
-    _user32.mouse_event.argtypes = [W.DWORD, W.DWORD, W.DWORD, ctypes.c_long, ctypes.c_ulong]
-    _user32.mouse_event.restype = None
-    _user32.keybd_event.argtypes = [W.BYTE, W.BYTE, W.DWORD, ctypes.POINTER(ctypes.c_ulong)]
-    _user32.keybd_event.restype = None
-    _user32.VkKeyScanW.argtypes = [W.WCHAR]
-    _user32.VkKeyScanW.restype = ctypes.c_short
-    _user32.GetCursorPos.argtypes = [ctypes.POINTER(W.POINT)]
-    _user32.GetCursorPos.restype = W.BOOL
-    _kernel32.GetModuleHandleW.argtypes = [W.LPCWSTR]
-    _kernel32.GetModuleHandleW.restype = HMODULE
-    _user32.LoadCursorW.argtypes = [W.HINSTANCE, W.LPCWSTR]
-    _user32.LoadCursorW.restype = HCURSOR
-    _user32.RegisterClassExW.argtypes = [ctypes.POINTER(_WndClassExW)]
-    _user32.RegisterClassExW.restype = W.ATOM
-    _user32.CreateWindowExW.argtypes = [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HWND, W.HMENU, W.HINSTANCE, W.LPVOID]
-    _user32.CreateWindowExW.restype = W.HWND
-    _user32.SetLayeredWindowAttributes.argtypes = [W.HWND, W.DWORD, W.BYTE, W.DWORD]
-    _user32.SetLayeredWindowAttributes.restype = W.BOOL
-    _user32.DefWindowProcW.argtypes = [W.HWND, W.UINT, W.WPARAM, W.LPARAM]
-    _user32.DefWindowProcW.restype = LRESULT
-    _user32.BeginPaint.argtypes = [W.HWND, ctypes.POINTER(_PaintStruct)]
-    _user32.BeginPaint.restype = W.HDC
-    _user32.EndPaint.argtypes = [W.HWND, ctypes.POINTER(_PaintStruct)]
-    _user32.EndPaint.restype = W.BOOL
-    _user32.InvalidateRect.argtypes = [W.HWND, ctypes.c_void_p, W.BOOL]
-    _user32.InvalidateRect.restype = W.BOOL
-    _user32.DestroyWindow.argtypes = [W.HWND]
-    _user32.DestroyWindow.restype = W.BOOL
-    _user32.PostQuitMessage.argtypes = [ctypes.c_int]
-    _user32.PostQuitMessage.restype = None
-    _user32.GetMessageW.argtypes = [ctypes.POINTER(W.MSG), W.HWND, W.UINT, W.UINT]
-    _user32.GetMessageW.restype = ctypes.c_int
-    _user32.TranslateMessage.argtypes = [ctypes.POINTER(W.MSG)]
-    _user32.TranslateMessage.restype = W.BOOL
-    _user32.DispatchMessageW.argtypes = [ctypes.POINTER(W.MSG)]
-    _user32.DispatchMessageW.restype = LRESULT
-    _user32.SetCapture.argtypes = [W.HWND]
-    _user32.SetCapture.restype = W.HWND
-    _user32.ReleaseCapture.argtypes = []
-    _user32.ReleaseCapture.restype = W.BOOL
-    _user32.SetForegroundWindow.argtypes = [W.HWND]
-    _user32.SetForegroundWindow.restype = W.BOOL
-    _user32.SetFocus.argtypes = [W.HWND]
-    _user32.SetFocus.restype = W.HWND
-    _user32.FillRect.argtypes = [W.HDC, ctypes.POINTER(W.RECT), W.HBRUSH]
-    _user32.FillRect.restype = W.BOOL
-    _user32.EnumWindows.argtypes = [ctypes.c_void_p, W.LPARAM]
-    _user32.EnumWindows.restype = W.BOOL
-    _user32.GetForegroundWindow.argtypes = []
-    _user32.GetForegroundWindow.restype = W.HWND
-    _user32.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
-    _user32.GetWindowTextW.restype = ctypes.c_int
-    _user32.GetWindowTextLengthW.argtypes = [W.HWND]
-    _user32.GetWindowTextLengthW.restype = ctypes.c_int
-    _user32.IsWindowVisible.argtypes = [W.HWND]
-    _user32.IsWindowVisible.restype = W.BOOL
-    _user32.IsIconic.argtypes = [W.HWND]
-    _user32.IsIconic.restype = W.BOOL
-    _user32.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
-    _user32.GetWindowRect.restype = W.BOOL
-    _user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
-    _user32.GetWindowThreadProcessId.restype = W.DWORD
-    _user32.GetWindowLongW.argtypes = [W.HWND, ctypes.c_int]
-    _user32.GetWindowLongW.restype = W.LONG
-    _dwmapi.DwmGetWindowAttribute.argtypes = [W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD]
-    _dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
-    _gdi32.CreateSolidBrush.argtypes = [W.DWORD]
-    _gdi32.CreateSolidBrush.restype = W.HBRUSH
-    _gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, W.DWORD]
-    _gdi32.CreatePen.restype = W.HGDIOBJ
-    _gdi32.Rectangle.argtypes = [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-    _gdi32.Rectangle.restype = W.BOOL
-    _gdi32.SetBkMode.argtypes = [W.HDC, ctypes.c_int]
-    _gdi32.SetBkMode.restype = ctypes.c_int
-    _gdi32.GetStockObject.argtypes = [ctypes.c_int]
-    _gdi32.GetStockObject.restype = W.HGDIOBJ
-    _user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int]
-    _user32.SendInput.restype = ctypes.c_uint
+    _bind(_user32, [
+        ("GetDC", [W.HWND], W.HDC),
+        ("ReleaseDC", [W.HWND, W.HDC], ctypes.c_int),
+        ("GetSystemMetrics", [ctypes.c_int], ctypes.c_int),
+        ("SetCursorPos", [ctypes.c_int, ctypes.c_int], W.BOOL),
+        ("mouse_event", [W.DWORD, W.DWORD, W.DWORD, ctypes.c_long, ctypes.c_ulong], None),
+        ("keybd_event", [W.BYTE, W.BYTE, W.DWORD, ctypes.POINTER(ctypes.c_ulong)], None),
+        ("VkKeyScanW", [W.WCHAR], ctypes.c_short),
+        ("GetCursorPos", [ctypes.POINTER(W.POINT)], W.BOOL),
+        ("LoadCursorW", [W.HINSTANCE, W.LPCWSTR], HCURSOR),
+        ("RegisterClassExW", [ctypes.POINTER(_WndClassExW)], W.ATOM),
+        ("CreateWindowExW", [W.DWORD, W.LPCWSTR, W.LPCWSTR, W.DWORD, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HWND, W.HMENU, W.HINSTANCE, W.LPVOID], W.HWND),
+        ("SetLayeredWindowAttributes", [W.HWND, W.DWORD, W.BYTE, W.DWORD], W.BOOL),
+        ("DefWindowProcW", [W.HWND, W.UINT, W.WPARAM, W.LPARAM], LRESULT),
+        ("BeginPaint", [W.HWND, ctypes.POINTER(_PaintStruct)], W.HDC),
+        ("EndPaint", [W.HWND, ctypes.POINTER(_PaintStruct)], W.BOOL),
+        ("InvalidateRect", [W.HWND, ctypes.c_void_p, W.BOOL], W.BOOL),
+        ("DestroyWindow", [W.HWND], W.BOOL),
+        ("PostQuitMessage", [ctypes.c_int], None),
+        ("GetMessageW", [ctypes.POINTER(W.MSG), W.HWND, W.UINT, W.UINT], ctypes.c_int),
+        ("TranslateMessage", [ctypes.POINTER(W.MSG)], W.BOOL),
+        ("DispatchMessageW", [ctypes.POINTER(W.MSG)], LRESULT),
+        ("SetCapture", [W.HWND], W.HWND),
+        ("ReleaseCapture", [], W.BOOL),
+        ("SetForegroundWindow", [W.HWND], W.BOOL),
+        ("SetFocus", [W.HWND], W.HWND),
+        ("FillRect", [W.HDC, ctypes.POINTER(W.RECT), W.HBRUSH], W.BOOL),
+        ("EnumWindows", [ctypes.c_void_p, W.LPARAM], W.BOOL),
+        ("GetForegroundWindow", [], W.HWND),
+        ("GetWindowTextW", [W.HWND, W.LPWSTR, ctypes.c_int], ctypes.c_int),
+        ("GetWindowTextLengthW", [W.HWND], ctypes.c_int),
+        ("IsWindowVisible", [W.HWND], W.BOOL),
+        ("IsIconic", [W.HWND], W.BOOL),
+        ("GetWindowRect", [W.HWND, ctypes.POINTER(W.RECT)], W.BOOL),
+        ("GetWindowThreadProcessId", [W.HWND, ctypes.POINTER(W.DWORD)], W.DWORD),
+        ("GetWindowLongW", [W.HWND, ctypes.c_int], W.LONG),
+        ("SendInput", [ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int], ctypes.c_uint),
+        ("ShowWindow", [W.HWND, ctypes.c_int], W.BOOL),
+        ("SetWindowPos", [W.HWND, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.UINT], W.BOOL),
+    ])
+    _bind(_gdi32, [
+        ("CreateCompatibleDC", [W.HDC], W.HDC),
+        ("CreateDIBSection", [W.HDC, ctypes.c_void_p, W.UINT, ctypes.POINTER(ctypes.c_void_p), W.HANDLE, W.DWORD], W.HBITMAP),
+        ("SelectObject", [W.HDC, W.HGDIOBJ], W.HGDIOBJ),
+        ("BitBlt", [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HDC, ctypes.c_int, ctypes.c_int, W.DWORD], W.BOOL),
+        ("StretchBlt", [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, W.DWORD], W.BOOL),
+        ("SetStretchBltMode", [W.HDC, ctypes.c_int], ctypes.c_int),
+        ("SetBrushOrgEx", [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_void_p], W.BOOL),
+        ("DeleteObject", [W.HGDIOBJ], W.BOOL),
+        ("DeleteDC", [W.HDC], W.BOOL),
+        ("CreateSolidBrush", [W.DWORD], W.HBRUSH),
+        ("CreatePen", [ctypes.c_int, ctypes.c_int, W.DWORD], W.HGDIOBJ),
+        ("Rectangle", [W.HDC, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int], W.BOOL),
+        ("SetBkMode", [W.HDC, ctypes.c_int], ctypes.c_int),
+        ("GetStockObject", [ctypes.c_int], W.HGDIOBJ),
+    ])
+    _bind(_kernel32, [("GetModuleHandleW", [W.LPCWSTR], HMODULE)])
+    _bind(_dwmapi, [("DwmGetWindowAttribute", [W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD], ctypes.c_long)])
 
 
 class _MouseInput(ctypes.Structure):
@@ -624,8 +583,6 @@ def _do_hotkey(keys_str: str) -> None:
     for vk_code_val in reversed(vk_codes):
         _key_event(vk_code_val, True)
         time.sleep(CFG.hotkey_inter_delay)
-
-
 def _do_scroll(pos_str: str, region_str: str, direction: int, clicks: int) -> None:
     if clicks <= 0:
         return
@@ -636,8 +593,6 @@ def _do_scroll(pos_str: str, region_str: str, direction: int, clicks: int) -> No
     for _ in range(clicks):
         _mouse_event(K.mouse_wheel, direction * K.wheel_delta)
         time.sleep(CFG.scroll_click_delay)
-
-
 def _do_wheel(pos_str: str, region_str: str, amount: int, horizontal: bool = False) -> None:
     amount = int(amount)
     if not amount:
@@ -647,8 +602,6 @@ def _do_wheel(pos_str: str, region_str: str, amount: int, horizontal: bool = Fal
     _move_cursor(pixel_x, pixel_y)
     time.sleep(CFG.click_settle_delay)
     _mouse_event(K.mouse_hwheel if horizontal else K.mouse_wheel, amount)
-
-
 def _do_stroke(point_strs: list[str], region_str: str) -> None:
     pixels: list[tuple[int, int]] = []
     for pos in point_strs:
@@ -668,16 +621,12 @@ def _do_stroke(point_strs: list[str], region_str: str) -> None:
             time.sleep(CFG.drag_step_delay)
     time.sleep(CFG.click_settle_delay)
     _send_mouse(up | absolute, pixels[-1][0], pixels[-1][1])
-
-
 def _do_cursor_pos(region_str: str) -> str:
     point: W.POINT = W.POINT()
     _user32.GetCursorPos(ctypes.byref(point))
     rx1, ry1, rx2, ry2 = _parse_region(region_str)
     norm_x, norm_y = _screen_pixel_to_norm(point.x, point.y, rx1, ry1, rx2, ry2)
     return f"{norm_x},{norm_y}"
-
-
 _selector_dragging: bool = False
 _selector_sx: int = 0
 _selector_sy: int = 0
@@ -689,8 +638,6 @@ _selector_wndproc_ref: WNDPROC_TYPE | None = None
 _selector_screen_w: int = 0
 _selector_screen_h: int = 0
 _selector_null_brush: int = 0
-
-
 def _selector_get_xy(lparam: int) -> tuple[int, int]:
     xval: int = lparam & 0xFFFF
     yval: int = (lparam >> 16) & 0xFFFF
@@ -699,12 +646,9 @@ def _selector_get_xy(lparam: int) -> tuple[int, int]:
     if yval > 32767:
         yval -= 65536
     return xval, yval
-
-
 def _selector_wndproc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
     global _selector_dragging, _selector_sx, _selector_sy
     global _selector_ex, _selector_ey, _selector_result, _selector_exit_code
-
     if msg == K.wm_erasebkgnd:
         return 1
     if msg == K.wm_keydown:
@@ -782,14 +726,11 @@ def _selector_wndproc(hwnd: int, msg: int, wparam: int, lparam: int) -> int:
         _user32.PostQuitMessage(0)
         return 0
     return int(_user32.DefWindowProcW(hwnd, msg, wparam, lparam))
-
-
 def _do_select_region() -> tuple[str, int]:
     global _selector_wndproc_ref, _selector_result, _selector_exit_code
     global _selector_screen_w, _selector_screen_h, _selector_null_brush
     global _selector_dragging, _selector_sx, _selector_sy
     global _selector_ex, _selector_ey
-
     _selector_dragging = False
     _selector_sx = 0
     _selector_sy = 0
@@ -797,15 +738,11 @@ def _do_select_region() -> tuple[str, int]:
     _selector_ey = 0
     _selector_result = None
     _selector_exit_code = 2
-
     _selector_screen_w, _selector_screen_h = _screen_size()
-
     _selector_null_brush = _gdi32.GetStockObject(K.null_brush)
-
     hinst: int = _kernel32.GetModuleHandleW(None)
     class_name: str = "ScreenRegionSelector"
     _selector_wndproc_ref = WNDPROC_TYPE(_selector_wndproc)
-
     wnd_class: _WndClassExW = _WndClassExW()
     wnd_class.cbSize = ctypes.sizeof(_WndClassExW)
     wnd_class.style = K.cs_hredraw | K.cs_vredraw
@@ -819,13 +756,11 @@ def _do_select_region() -> tuple[str, int]:
     wnd_class.lpszMenuName = None
     wnd_class.lpszClassName = class_name
     wnd_class.hIconSm = 0
-
     atom: int = _user32.RegisterClassExW(ctypes.byref(wnd_class))
     if not atom:
         last_err: int = ctypes.get_last_error()
         if last_err != K.error_class_already_exists:
             _err(f"RegisterClassExW failed: {last_err}")
-
     ex_style: int = K.ws_ex_layered | K.ws_ex_topmost | K.ws_ex_toolwindow
     hwnd: int = _user32.CreateWindowExW(
         ex_style, class_name, "Region Select",
@@ -835,11 +770,9 @@ def _do_select_region() -> tuple[str, int]:
     )
     if not hwnd:
         _err("CreateWindowExW failed")
-
     _user32.SetLayeredWindowAttributes(hwnd, 0, CFG.overlay_alpha, K.lwa_alpha)
     _user32.SetForegroundWindow(hwnd)
     _user32.SetFocus(hwnd)
-
     msg_struct: W.MSG = W.MSG()
     while True:
         result: int = _user32.GetMessageW(ctypes.byref(msg_struct), None, 0, 0)
@@ -847,10 +780,20 @@ def _do_select_region() -> tuple[str, int]:
             break
         _user32.TranslateMessage(ctypes.byref(msg_struct))
         _user32.DispatchMessageW(ctypes.byref(msg_struct))
-
     if _selector_result is not None:
         px_x1, px_y1, px_x2, px_y2 = _selector_result
         norm_x1, norm_y1 = _screen_pixel_to_norm(px_x1, px_y1, 0, 0, K.norm, K.norm)
         norm_x2, norm_y2 = _screen_pixel_to_norm(px_x2, px_y2, 0, 0, K.norm, K.norm)
         return f"{norm_x1},{norm_y1},{norm_x2},{norm_y2}", 0
     return K.sentinel, _selector_exit_code
+def _do_place(hwnd, left, top, right, bottom):
+    """Move a window onto a 0-1000 box. Clears topmost so it does not cover the rest of the desktop."""
+    sw, sh = _screen_size()
+    left, top, right, bottom = (int(float(v)) for v in (left, top, right, bottom))
+    if not (0 <= left < right <= K.norm and 0 <= top < bottom <= K.norm):
+        raise ValueError('box is left top right bottom on 0-1000')
+    x, y = left * sw // K.norm, top * sh // K.norm
+    w, h = max((right - left) * sw // K.norm, 1), max((bottom - top) * sh // K.norm, 1)
+    _user32.ShowWindow(int(hwnd), 9)
+    moved = bool(_user32.SetWindowPos(int(hwnd), ctypes.c_void_p(-2), x, y, w, h, 0x0040))
+    return dict(hwnd=int(hwnd), box=[left, top, right, bottom], moved=moved, err=ctypes.get_last_error())

@@ -2,9 +2,4 @@
 name = "trident"
 version = "0"
 requires-python = ">=3.11"
-dependencies = ["opencv-python", "pillow", "pywin32", "pytest", "pyflakes"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-addopts = "-q"
+dependencies = ["pillow", "pywin32"]
