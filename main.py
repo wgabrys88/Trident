@@ -547,6 +547,8 @@ class Engine:
             for cmd in filter(None, map(str.strip, line.split(';'))):
                 verb, _, rest = cmd.partition(' ')
                 if verb == 'key': d.key(rest)
+                elif verb in ('type', 'paste'):
+                    (d.type_text if verb == 'type' else d.paste)(rest)
                 elif verb == 'wait': time.sleep(max(0, float(rest)))
                 elif verb == 'scroll':
                     n, *at = rest.split(); d.scroll(int(n), *map(float, at))
