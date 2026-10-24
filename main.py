@@ -1,42 +1,42 @@
-#!/usr/bin/env python3
-"""Trident. main.py is the mind, the eye and the tools. win32.py is the hand.
-story.txt and ledger.md are memory. skills/*.py can add a tool. The brain defaults to
-grok-4.7-medium-fast.
-"""
-import argparse, ast, atexit, base64, ctypes, importlib.util, io, json, math, os, re, signal, socket, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid, win32job
+import argparse, ast, atexit, base64, importlib.util, io, json, math, msvcrt, os, re, signal, socket, subprocess, sys, threading, time, urllib.parse, urllib.request, uuid
 from collections import Counter
 from contextlib import ExitStack, redirect_stdout
-from ctypes import wintypes
 from dataclasses import InitVar, dataclass
 from functools import cached_property
 from pathlib import Path
-from PIL import Image
-try: import msvcrt
-except ImportError: msvcrt = None
 
 sys.dont_write_bytecode = True
-SCRIPT, ROOT, PYTHON, E = Path(__file__).resolve(), Path(__file__).resolve().parent, Path(sys.executable), os.environ.get
-VENV = ROOT / '.venv' / 'Scripts' / 'python.exe'
+import win32
+
+SCRIPT, ROOT, PYTHON = Path(__file__).resolve(), Path(__file__).resolve().parent, Path(sys.executable)
 NVIDIA_HOST = '192.168.16.31'
-DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14-20261014')
+SETTINGS = {'vision-url': f'http://{NVIDIA_HOST}:1234', 'vision-model': 'retina', 'fara-width': 1440, 'fara-max-tokens': 2048, 'fara-zoom': 250, 'shot-delay': 1.5,
+            'jev-model': 'typesafe/jev-1.14-20261014', 'mind-model': '', 'minutes': '', 'pilot-autoreply': False,
+            'run': time.strftime('%Y%m%d_%H%M%S'), 'wake-start': '', 'wake-end': '', 'retina-pin': ''}
+OPTIONS = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+for name, default in SETTINGS.items():
+    OPTIONS.add_argument('--' + name, **(dict(action='store_true') if default is False else dict(type=type(default), default=default)))
+KNOWN = vars(OPTIONS.parse_known_args()[0])
+SET = {name: KNOWN[name.replace('-', '_')] for name in SETTINGS}
+DECISION_MODEL = SET['jev-model']
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
-VISION_URL = E('TRIDENT_VISION_URL', f'http://{NVIDIA_HOST}:1234')
-VISION_MODEL = E('TRIDENT_VISION_MODEL', 'retina')
+VISION_URL = SET['vision-url']
+VISION_MODEL = SET['vision-model']
 BRAIN = 'grok-4.7-medium-fast'
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
-RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.md')
-NORM, SCREENSHOT_DELAY = 1000, float(E('TRIDENT_SHOT_DELAY', '1.5'))
+RUN = ROOT / ('run_' + SET['run'] + '.md')
+NORM, SCREENSHOT_DELAY = 1000, SET['shot-delay']
 FARA_FACTOR = 32
 FARA_MIN_PIXELS, FARA_MAX_PIXELS = 256 * FARA_FACTOR ** 2, 4096 * FARA_FACTOR ** 2
-FARA_TARGET_WIDTH = int(E('TRIDENT_FARA_WIDTH', '1440'))
-FARA_MAX_TOKENS, FARA_TIMEOUT = int(os.environ.get('FARA_MAX_TOKENS', 2048)), 180
-ZOOM_SPAN, POINTER = int(E('TRIDENT_FARA_ZOOM', '250')), ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag')
+FARA_TARGET_WIDTH = SET['fara-width']
+FARA_MAX_TOKENS, FARA_TIMEOUT = SET['fara-max-tokens'], 180
+ZOOM_SPAN, POINTER = SET['fara-zoom'], ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag')
 JOURNAL_HOST, JOURNAL_PORT = '0.0.0.0', 8765
 DETACHED = 0x00000008 | 0x00000200 | 0x08000000
-MINUTES = E('TRIDENT_MINUTES', '')
+MINUTES, WAKE_START, WAKE_END = SET['minutes'], SET['wake-start'], SET['wake-end']
 LEDGER_WAKES, LEDGER_CHARS, LEDGER_LESSON = 12, 8000, 1200
 RECALL_RUNS, RECALL_CHARS = 5, 800
-WAKE, WAKE_ID = re.compile(r'(?m)^## wake '), os.environ['TRIDENT_RUN']
+WAKE, WAKE_ID = re.compile(r'(?m)^## wake '), SET['run']
 JEV_USAGE = '--jev "NARRATIVE" "QUESTION" ["QUESTION" ...], each QUESTION one of: "name?Claim" (yes/no), "name?Q|true=Yes|false=No", "name?Q|a=Option|b=Option" (choice), "name#Q|Level1|Level2" (score), "name@target in the current capture" (box)'
 CHANGE_APPROACH = 'Keep the goal. This way is not working. Switch to a different strategy and continue.'
 GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
@@ -86,6 +86,13 @@ FARA_TOOL = dict(
 FARA_SYSTEM = FARA_IDENTITY + '\n\n' + FARA_CRITICAL + '\n\n' + 'You are provided with function signatures within <tools></tools> XML tags:\n<tools>\n' + json.dumps(dict(type='function', function=FARA_TOOL), ensure_ascii=False) + '\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
 FARA_ACTIONS = FARA_TOOL['parameters']['properties']['action']['enum']
 CLI_CONFIG = dict(version=1, permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], deny=[]), sandbox=dict(mode='disabled'), approvalMode='unrestricted', autoAcceptWebSearch=True)
+NEXT = 'Here is the next screenshot. Think about what to do next.'
+AUTO_REPLY = "keep going so far as you don't make up information, you have my approval"
+MAX_IMAGES, STEPS, WAIT_CAP = 3, 30, 30.0
+NO_PAGE = 'This is a Windows desktop, not a web page: {action} cannot read page text here. Look at the screenshot and use the mouse and keyboard.'
+FARA_KEY = {k: k for k in ('ctrl', 'shift', 'alt', 'win', 'enter', 'esc', 'tab', 'backspace', 'del', 'up', 'down', 'left', 'right', 'pageup', 'pagedown', 'space', 'home', 'end', 'insert', *(f'f{i}' for i in range(1, 13)))} | {
+    'control': 'ctrl', 'meta': 'win', 'windows': 'win', 'super': 'win', 'cmd': 'win', 'command': 'win', 'option': 'alt', 'return': 'enter', 'escape': 'esc', 'delete': 'del',
+    'arrowup': 'up', 'arrowdown': 'down', 'arrowleft': 'left', 'arrowright': 'right'}
 _SERVED = False
 
 def text(p, v):
@@ -95,27 +102,27 @@ def text(p, v):
     log('file', dict(path=str(p), text=v if len(v) <= 4000 else '', size=len(v)))
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
+def contents(p): return p.read_bytes() if p.exists() else b''
+def forwarded(**values):
+    return [arg for name, value in (SET | values).items() if value != SETTINGS[name] or name == 'run' for arg in (['--' + name] if value is True else ['--' + name, str(value)])]
 def clock():
-    if not E('TRIDENT_START'): return {}
+    if not WAKE_START: return {}
     now = time.time()
-    left = dict(left=f"{(float(E('TRIDENT_END')) - now) / 60:.1f} min") if E('TRIDENT_END') else {}
-    return dict(clock=dict(now=time.strftime('%H:%M:%S'), used=f"{(now - float(E('TRIDENT_START'))) / 60:.1f} min") | left)
-def b64(im):
-    buf = io.BytesIO(); im.save(buf, 'PNG')
-    return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+    left = dict(left=f"{(float(WAKE_END) - now) / 60:.1f} min") if WAKE_END else {}
+    return dict(clock=dict(now=time.strftime('%H:%M:%S'), used=f"{(now - float(WAKE_START)) / 60:.1f} min") | left)
+def load(path): return win32.unpng(Path(path).read_bytes())
+def b64(image): return 'data:image/png;base64,' + base64.b64encode(win32.png(image)).decode()
 def words(message):
     content = (message or {}).get('content') if isinstance(message, dict) else message
     if isinstance(content, str): return content
     if isinstance(content, list): return ''.join(p.get('text', '') if isinstance(p, dict) else str(p) for p in content)
     return '' if content is None else str(content)
 def reply(body):
-    """The answer inside a Retina or Jev response body."""
     if isinstance(body, dict) and body.get('choices'): return words((body['choices'][0] or {}).get('message'))
     if isinstance(body, dict) and 'answers' in body: return json.dumps(body['answers'], ensure_ascii=False)
     return json.dumps(body, ensure_ascii=False, default=str)
 THOUGHT = []
 def narrate(kind, data):
-    """Journal rows for one event; thinking deltas are held and written as one think row before the next event."""
     try: event = json.loads(data) if kind == 'agent' else None
     except json.JSONDecodeError: event = None
     if isinstance(event, dict) and event.get('type') == 'thinking':
@@ -157,36 +164,24 @@ def log(kind, data):
     blob = b''.join(render(item) for item in narrate(kind, data))
     if not blob: return
     with open(RUN, 'ab') as handle:
-        locked = False
-        if msvcrt:
-            try: handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1); locked = True
-            except OSError: pass
-        try: handle.write(blob); handle.flush()
-        finally:
-            if locked: handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        handle.write(blob); handle.flush()
+        handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     if sys.stdout.isatty():
         sys.stdout.buffer.write(blob); sys.stdout.buffer.flush()
-def _journal_target():
-    try:
-        target = Path((ROOT / 'journal.path').read_text('utf-8').strip())
-        if str(target): return target
-    except OSError: pass
-    return RUN
-def _port_open():
+def journal_target(): return Path((ROOT / 'journal.path').read_text('utf-8').strip())
+def port_open():
     try:
         with socket.create_connection(('127.0.0.1', JOURNAL_PORT), 0.3): return True
     except OSError: return False
 def serve():
     global _SERVED
     pointer, target = ROOT / 'journal.path', str(RUN)
-    try: current = pointer.read_text(encoding='utf-8').strip()
-    except OSError: current = ''
-    if current != target:
+    if contents(pointer).decode('utf-8').strip() != target:
         pointer.write_text(target, encoding='utf-8'); _SERVED = False
-    if _SERVED or _port_open():
+    if _SERVED or port_open():
         _SERVED = True; return
-    try: subprocess.Popen([str(PYTHON), '-u', '-B', '-X', 'utf8', str(SCRIPT), '--journal'], cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACHED, close_fds=True)
-    except OSError: return
+    subprocess.Popen([str(PYTHON), '-u', '-B', '-X', 'utf8', str(SCRIPT), '--journal'], cwd=str(ROOT), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACHED, close_fds=True)
 def journal_serve():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     page = b'<!DOCTYPE html><meta charset=utf-8><title>trident</title><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font:14px monospace"></pre><script>var t=document.getElementById("t"),es=new EventSource("/events");function z(){scrollTo(0,1e9)}es.addEventListener("reset",function(e){t.textContent=e.data;z()});es.addEventListener("more",function(e){t.textContent+=e.data;z()})</script>'
@@ -198,53 +193,47 @@ def journal_serve():
             self.end_headers()
             if body and not stream: self.wfile.write(body)
         def _event(self, name, payload):
-            text = payload.decode('utf-8', 'replace') if isinstance(payload, (bytes, bytearray)) else str(payload)
-            self.wfile.write(('event: %s\n' % name + ''.join('data: %s\n' % line for line in text.split('\n')) + '\n').encode()); self.wfile.flush()
+            self.wfile.write(('event: %s\n' % name + ''.join('data: %s\n' % line for line in payload.decode('utf-8', 'replace').split('\n')) + '\n').encode()); self.wfile.flush()
         def do_GET(self):
-            path, target = self.path.split('?', 1)[0], _journal_target()
+            path, target = self.path.split('?', 1)[0], journal_target()
             if path == '/md':
-                try: body = target.read_bytes()
-                except OSError: body = b''
-                self._send(200, 'text/plain; charset=utf-8', body); return
+                self._send(200, 'text/plain; charset=utf-8', contents(target)); return
             if path == '/events':
                 self._send(200, 'text/event-stream; charset=utf-8', stream=True)
                 seen = current = None
                 try:
                     while True:
-                        try: data = target.read_bytes()
-                        except OSError: data = b''
-                        key = str(target)
+                        data, key = contents(target), str(target)
                         if key != current or seen is None or len(data) < seen:
                             current, seen = key, len(data); self._event('reset', data)
                         elif len(data) > seen:
                             self._event('more', data[seen:]); seen = len(data)
-                        target = _journal_target(); time.sleep(0.4)
-                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError): return
+                        target = journal_target(); time.sleep(0.4)
+                except OSError: return
             if path in ('/', '/index.html'):
                 self._send(200, 'text/html; charset=utf-8', page); return
             self.send_error(404)
-    try:
-        ThreadingHTTPServer.allow_reuse_address = True
-        ThreadingHTTPServer((JOURNAL_HOST, JOURNAL_PORT), H).serve_forever()
-    except OSError: return
-def _by_factor(number, factor, how): return int(how(number / factor) * factor)
-def fara_fit(im):
-    height, width = im.height, im.width
-    if max(height, width) / min(height, width) > 200: raise ValueError('bad image')
-    if FARA_TARGET_WIDTH and width > FARA_TARGET_WIDTH:
-        height, width = height * FARA_TARGET_WIDTH / width, FARA_TARGET_WIDTH
-    h_bar, w_bar = max(FARA_FACTOR, _by_factor(height, FARA_FACTOR, round)), max(FARA_FACTOR, _by_factor(width, FARA_FACTOR, round))
+    ThreadingHTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer((JOURNAL_HOST, JOURNAL_PORT), H).serve_forever()
+def snap(number, how): return int(how(number / FARA_FACTOR) * FARA_FACTOR)
+def fara_fit(image):
+    _, w, h = image
+    if max(h, w) / min(h, w) > 200: raise ValueError('bad image')
+    height, width = (h * FARA_TARGET_WIDTH / w, FARA_TARGET_WIDTH) if FARA_TARGET_WIDTH and w > FARA_TARGET_WIDTH else (h, w)
+    h_bar, w_bar = max(FARA_FACTOR, snap(height, round)), max(FARA_FACTOR, snap(width, round))
     if h_bar * w_bar > FARA_MAX_PIXELS:
         beta = math.sqrt((height * width) / FARA_MAX_PIXELS)
-        h_bar, w_bar = max(FARA_FACTOR, _by_factor(height / beta, FARA_FACTOR, math.floor)), max(FARA_FACTOR, _by_factor(width / beta, FARA_FACTOR, math.floor))
+        h_bar, w_bar = max(FARA_FACTOR, snap(height / beta, math.floor)), max(FARA_FACTOR, snap(width / beta, math.floor))
     elif h_bar * w_bar < FARA_MIN_PIXELS:
         beta = math.sqrt(FARA_MIN_PIXELS / (height * width))
-        h_bar, w_bar = _by_factor(height * beta, FARA_FACTOR, math.ceil), _by_factor(width * beta, FARA_FACTOR, math.ceil)
-    return im if (im.width, im.height) == (w_bar, h_bar) else im.resize((w_bar, h_bar), Image.Resampling.LANCZOS)
-def jev_fit(im):
-    width, height = max(im.width, math.ceil(im.height / 2)), max(im.height, math.ceil(im.width / 2))
-    canvas = Image.new('RGB', (width, height)); canvas.paste(im, (0, 0))
-    return fara_fit(canvas), width / im.width, height / im.height
+        h_bar, w_bar = snap(height * beta, math.ceil), snap(width * beta, math.ceil)
+    return image if (w, h) == (w_bar, h_bar) else win32.stretch(image, (0, 0, w, h), w_bar, h_bar)
+def jev_fit(image):
+    pixels, w, h = image
+    width, height = max(w, math.ceil(h / 2)), max(h, math.ceil(w / 2))
+    pad, stride = bytes((width - w) * 4), w * 4
+    canvas = b''.join(pixels[y * stride:(y + 1) * stride] + pad for y in range(h)) + bytes(width * 4 * (height - h))
+    return fara_fit((canvas, width, height)), width / w, height / h
 def fara_call(raw):
     parts = raw.split('<tool_call>', 1)
     if len(parts) != 2: raise ValueError('Fara tool_call expected')
@@ -258,16 +247,16 @@ def fara_point(arguments):
     if isinstance(xy, str): xy = re.findall(r'-?\d+(?:\.\d+)?', xy)
     if not (isinstance(xy, (list, tuple)) and len(xy) == 2): raise ValueError('bad point')
     return tuple(max(0, min(NORM, int(round(float(v))))) for v in xy)
-FARA_KEY = dict(control='ctrl', ctrl='ctrl', shift='shift', alt='alt', meta='win', win='win', windows='win', enter='enter', escape='esc', esc='esc', tab='tab', backspace='backspace', delete='del', arrowup='up', arrowdown='down', arrowleft='left', arrowright='right', up='up', down='down', left='left', right='right', pageup='pageup', pagedown='pagedown', space='space', home='home', end='end', insert='insert')
-FARA_KEY['return'] = 'enter'
-FARA_KEY['del'] = 'del'
-FARA_KEY.update(super='win', cmd='win', command='win', option='alt', **{f'f{i}': f'f{i}' for i in range(1, 13)})
+def fara_parse(raw):
+    thoughts, call = fara_call(raw); arguments = call['arguments']
+    if arguments.get('action') not in FARA_ACTIONS: raise ValueError(f"unknown action {arguments.get('action')!r}")
+    return thoughts, arguments, fara_point(arguments)
 def zoom_box(point, span=ZOOM_SPAN):
     span = max(1, min(NORM, int(span))); l, t = (min(max(v - span // 2, 0), NORM - span) for v in point)
     return [l, t, l + span, t + span]
-def zoom_crop(im, box):
-    w, h = im.size; crop = im.crop(tuple((v * (h if i % 2 else w) + NORM // 2) // NORM for i, v in enumerate(box)))
-    return crop.resize((FARA_TARGET_WIDTH, max(1, round(FARA_TARGET_WIDTH * crop.height / max(1, crop.width)))), Image.Resampling.LANCZOS)
+def zoom_crop(image, box):
+    l, t, r, b = win32.to_pixels(box, *image[1:])
+    return win32.stretch(image, (l, t, r, b), FARA_TARGET_WIDTH, max(1, round(FARA_TARGET_WIDTH * (b - t) / max(1, r - l))))
 def zoom_back(box, q): return [max(0, min(NORM, box[i] + (q[i] * (box[i + 2] - box[i]) + NORM // 2) // NORM)) for i in (0, 1)]
 def fara_keys(names):
     out = []
@@ -277,10 +266,11 @@ def fara_keys(names):
         if key is None: raise ValueError(f'unknown {name}')
         out.append(key)
     if not out: raise ValueError('unknown key')
-    return 'key ' + '+'.join(out)
+    return '+'.join(out)
+def notches(pixels, span): return int(round(pixels * span / 1000 / 120.0))
 def fara_program(arguments, size=(0, 0)):
     action, point = arguments.get('action'), fara_point(arguments)
-    if action in ('left_click', 'double_click', 'right_click', 'triple_click', 'mouse_move', 'left_click_drag') and point is None: raise ValueError('bad point')
+    if action in POINTER and point is None: raise ValueError('bad point')
     if action == 'left_click': return f'click {point[0]} {point[1]}'
     if action == 'double_click': return f'dclick {point[0]} {point[1]}'
     if action == 'right_click': return f'rclick {point[0]} {point[1]}'
@@ -288,11 +278,9 @@ def fara_program(arguments, size=(0, 0)):
     if action == 'mouse_move': return f'move {point[0]} {point[1]}'
     if action == 'left_click_drag': return f"x, y = desktop.position()\ndesktop.drag([(x, y), ({point[0]}, {point[1]})])"
     if action == 'type': return 'type ' + str(arguments.get('text', ''))
-    if action == 'key': return fara_keys(arguments.get('keys') or [])
-    width, height = (list(size) + [0, 0])[:2]
+    if action == 'key': return 'key ' + fara_keys(arguments.get('keys') or [])
     if action in ('scroll', 'hscroll'):
-        pixels, span = int(arguments.get('pixels') or 0), int((width if action == 'hscroll' else height) or 0)
-        amount = 0 if not pixels or span <= 0 else int(round(pixels * span / 1000 / 120.0)) * 120
+        amount = notches(int(arguments.get('pixels') or 0), int(size[0 if action == 'hscroll' else 1] or 0)) * 120
         if not amount: return ''
         verb = 'hwheel' if action == 'hscroll' else 'wheel'
         return f'{verb} {amount}' + (f' {point[0]} {point[1]}' if point else '')
@@ -321,24 +309,17 @@ def questions(blocks):
         else: q[qid] = dict(type='noul', instructions=ask)
     if not q: raise ValueError(JEV_USAGE)
     return q
-def module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod); return mod
-def HAND():
-    mod = getattr(HAND, 'mod', None)
-    if mod: return mod
-    mod = module('trident_hand', ROOT / 'win32.py'); mod._setup_bindings(); HAND.mod = mod; return mod
 def brain_model(sentence=''):
-    """TRIDENT_MODEL wins. A grok-4.7 slug named in the sentence wins. Otherwise medium-fast."""
-    forced = E('TRIDENT_MODEL', '').strip()
+    forced = SET['mind-model'].strip()
     if forced: return forced
-    text = str(sentence).lower()
+    said = str(sentence).lower()
     for slug in sorted(BRAINS, key=len, reverse=True):
-        if slug in text: return slug
+        if slug in said: return slug
     return BRAIN
-def trajectory(engine):
+def earlier(): return [digest(p) for p in sorted(ROOT.glob('run_*.md')) if p != RUN][-RECALL_RUNS:]
+def trajectory():
     calls, errors = Counter(), 0
-    wakes = [digest(p) for p in sorted(ROOT.glob('run_*.md')) if p != RUN][-RECALL_RUNS:]
+    wakes = earlier()
     for wake in wakes:
         calls.update(wake.get('calls') or {}); errors += int(wake.get('errors') or 0)
     dominant = calls.most_common(1)[0][0] if calls else ''
@@ -352,14 +333,75 @@ def digest(path):
     said = re.findall(r'(?ms)^## \S+ say\n\n(.*?)(?=^## |\Z)', s)
     sentence = re.search(r'(?ms)^SENTENCE\n\n(.*?)(?=^## |\Z)', s)
     return dict(run=path.stem, span=[heads[0][0], heads[-1][0]] if heads else [], sentence=sentence.group(1).strip()[:RECALL_CHARS] if sentence else '', calls=dict(Counter(n for _, k, n in heads if k == 'request' and n)), errors=sum(k == 'err' for _, k, _ in heads), final=said[-1].strip()[:RECALL_CHARS] if said else '')
-def alive(pid):
-    if not pid: return False
-    k = ctypes.WinDLL('kernel32', use_last_error=True)
-    k.OpenProcess.restype, k.OpenProcess.argtypes = wintypes.HANDLE, (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    k.CloseHandle.argtypes, k.CloseHandle.restype = (wintypes.HANDLE,), wintypes.BOOL
-    handle = k.OpenProcess(0x1000, False, int(pid))
-    if not handle: return False
-    k.CloseHandle(handle); return True
+def user_turn(url, prompt, original=False, keep=None):
+    msg = dict(role='user', content=[dict(type='image_url', image_url=dict(url=url)), dict(type='text', text=prompt)])
+    if original: msg['_keep'] = prompt
+    elif keep is not None: msg['_keep'] = keep
+    return msg
+def has_image(msg): return isinstance(msg.get('content'), list) and any(isinstance(c, dict) and c.get('type') == 'image_url' for c in msg['content'])
+def prune(history, keep=MAX_IMAGES):
+    out, seen = [], 0
+    for msg in reversed(history):
+        if has_image(msg):
+            if seen < keep: out.append(msg)
+            elif '_keep' in msg: out.append(dict(role=msg['role'], content=[dict(type='text', text=msg['_keep'])], _keep=msg['_keep']))
+            seen += 1
+        else: out.append(msg)
+    return out[::-1]
+def messages(system, history, keep=MAX_IMAGES): return [dict(role='system', content=system)] + [{k: v for k, v in m.items() if not k.startswith('_')} for m in prune(history, keep)]
+def key_combo(keys):
+    if isinstance(keys, str): keys = [keys]
+    return fara_keys([part for k in keys or [] for part in re.split(r'\s*\+\s*', str(k).strip()) if part])
+def scroll_amount(pixels, span):
+    pixels = float(pixels or 0)
+    if not pixels or not span: return 0
+    return (notches(pixels, span) or (1 if pixels > 0 else -1)) * 120
+def fara_type(desktop, value):
+    if not value.isascii() or any(ord(c) < 32 and c not in '\n\t' for c in value): desktop.paste(value); return
+    for i, line in enumerate(value.split('\n')):
+        if i: desktop.key('enter')
+        if line: desktop.type_text(line)
+def act(engine, args, size, facts):
+    kind, d = args.get('action'), engine.desktop
+    point = fara_point(args)
+    if kind in POINTER and point is None: raise ValueError(f'{kind} needs a coordinate')
+    if kind == 'left_click': d.click(*point); return False, f'I clicked at coordinates {point}.', ''
+    if kind == 'right_click': d.rightClick(*point); return False, f'I right-clicked at coordinates {point}.', ''
+    if kind == 'double_click': d.doubleClick(*point); return False, f'I double-clicked at coordinates {point}.', ''
+    if kind == 'triple_click': d.click(*point, clicks=3); return False, f'I triple-clicked at coordinates {point}.', ''
+    if kind == 'mouse_move': d.moveTo(*point); return False, f'I moved the cursor to {point}.', ''
+    if kind == 'left_click_drag':
+        start = d.position(); d.drag([start, point]); return False, f'I dragged from {tuple(start)} to {point}.', ''
+    if kind == 'key':
+        combo = key_combo(args.get('keys')); d.key(combo); return False, f'I pressed the following keys: {combo}', ''
+    if kind == 'type':
+        value = str(args.get('text', '')); fara_type(d, value); return False, f"I typed '{value}'.", ''
+    if kind in ('scroll', 'hscroll'):
+        amount = scroll_amount(args.get('pixels'), size[0 if kind == 'hscroll' else 1])
+        at = point or d.position()
+        if amount: d.wheel(amount, *at, horizontal=kind == 'hscroll')
+        return False, f'I scrolled {"horizontally " if kind == "hscroll" else ""}by {amount} wheel units at {tuple(at)}.', ''
+    if kind == 'wait':
+        t = min(WAIT_CAP, max(0.0, float(args.get('time', args.get('duration', 3.0)) or 0))); time.sleep(t); return False, f'I waited {t:g}s.', ''
+    if kind in ('visit_url', 'web_search'):
+        raw = str(args.get('url' if kind == 'visit_url' else 'query') or '')
+        url = raw if kind == 'visit_url' and raw.startswith(('https://', 'http://')) else ('https://' + raw if kind == 'visit_url' and ' ' not in raw else 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(raw) + '&FORM=QBLH')
+        os.startfile(url); return False, f'I opened {url} in the default browser.', ''
+    if kind == 'history_back': d.key('alt+left'); return False, 'I pressed alt+left (back).', ''
+    if kind == 'read_page_answer_question':
+        note = NO_PAGE.format(action=kind); return False, note, note
+    if kind == 'pause_and_memorize_fact':
+        fact = str(args.get('fact', '')); facts.append(fact); return False, f'I memorized the following fact: {fact}', ''
+    if kind == 'ask_user_question': return True, f"I asked the user: {args.get('question', '')}", ''
+    if kind == 'terminate': return True, str(args.get('answer', '')), ''
+    raise ValueError(f'unknown action {kind!r}')
+def step_md(n, obs, sent, thoughts, args, point, px, result, info):
+    shown = {k: v for k, v in args.items() if k not in ('action', 'thoughts')}
+    rows = [f'### step {n}', f"- screenshot: {obs['image']} (sent {sent[0]}x{sent[1]})", f'- thought: {thoughts or "-"}',
+            f"- action: {args.get('action')} {json.dumps(shown, ensure_ascii=False)}"]
+    if point: rows.append(f'- coordinate: {list(point)} of 0-1000 -> screen px {list(px)}')
+    rows += [f'- result: {result}', f"- fara: {info}"]
+    return '\n'.join(rows)
 
 @dataclass(frozen=True)
 class Oracle:
@@ -375,11 +417,9 @@ class Oracle:
         log('resp', dict(url=self.url, body=response)); return response
 class Vision(Oracle):
     headers = {}
-    def ask(self, text, image, origin):
-        messages = [dict(role='system', content=FARA_SYSTEM), dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=text)])]
-        return self.chat(messages, dict(question=text, image=origin, sent_size=list(image.size)))[0]
+    def ask(self, prompt, image, origin):
+        return self.chat([dict(role='system', content=FARA_SYSTEM), user_turn(b64(image), prompt)], dict(question=prompt, image=origin, sent_size=list(image[1:])))[0]
     def chat(self, messages, shown):
-        """One Fara call on a whole conversation. Returns (reply text, response body)."""
         response = self.post(dict(model=VISION_MODEL, temperature=0, max_tokens=FARA_MAX_TOKENS, chat_template_kwargs=dict(enable_thinking=False), messages=messages), shown)
         choice, message = response['choices'][0], response['choices'][0]['message']
         if choice.get('finish_reason') == 'length': raise ValueError(f'reply cut at {FARA_MAX_TOKENS} tokens')
@@ -392,33 +432,30 @@ class Decision(Oracle):
     def ask(self, state, questions, shown):
         return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(state=shown, questions=questions))
 
+def whole(v): return int(round(float(v)))
 class Hand:
-    """Desktop API for --hands. Points are 0-1000 of the region."""
     def __init__(self, work): self.work = work
     region = property(lambda self: (self.work / 'region.txt').read_text('utf-8').strip())
-    w = property(lambda self: HAND())
-    def _pair(self, x, y): return f'{int(round(float(x)))},{int(round(float(y)))}'
-    def position(self): return tuple(map(int, self.w._do_cursor_pos(self.region).split(',')))
+    def position(self): return win32.cursor(self.region)
     def moveTo(self, x, y, duration=0):
-        px, py = self.w._resolve_screen_pos(*map(int, self._pair(x, y).split(',')), self.region)
-        self.w._move_cursor(px, py); return dict(at=[int(round(float(x))), int(round(float(y)))])
+        x, y = whole(x), whole(y)
+        win32.move(*win32.point(x, y, self.region)); return dict(at=[x, y])
     def click(self, x, y, button='left', clicks=1):
-        pair = self._pair(x, y)
-        if button == 'right': self.w._do_right_click(pair, self.region)
-        elif clicks == 2: self.w._do_double_click(pair, self.region)
-        elif clicks > 2:
-            for _ in range(clicks): self.w._do_click(pair, self.region)
-        else: self.w._do_click(pair, self.region)
-        return dict(clicked=[int(round(float(x))), int(round(float(y)))], button=button, clicks=clicks)
+        x, y = whole(x), whole(y)
+        if button == 'right': win32.click(x, y, self.region, right=True)
+        elif clicks == 2: win32.double_click(x, y, self.region)
+        else:
+            for _ in range(max(1, clicks)): win32.click(x, y, self.region)
+        return dict(clicked=[x, y], button=button, clicks=clicks)
     def rightClick(self, x, y): return self.click(x, y, 'right')
     def doubleClick(self, x, y): return self.click(x, y, clicks=2)
     def drag(self, points, duration=0.2):
         if len(points) < 2: raise ValueError('drag needs >=2 points')
-        self.w._do_stroke([self._pair(*p) for p in points], self.region); return dict(dragged=len(points))
+        win32.stroke([(whole(x), whole(y)) for x, y in points], self.region); return dict(dragged=len(points))
     def key(self, combo):
-        self.w._do_hotkey(str(combo)); return dict(keys=str(combo).replace(' ', '').lower().split('+'))
+        win32.hotkey(str(combo)); return dict(keys=str(combo).replace(' ', '').lower().split('+'))
     def type_text(self, value):
-        self.w._do_type_text(str(value)); return dict(typed=len(str(value)))
+        win32.type_text(str(value)); return dict(typed=len(str(value)))
     def set_clipboard(self, value):
         subprocess.run(['powershell.exe', '-NoProfile', '-Command', '[Console]::InputEncoding=[Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())'], input=str(value).encode('utf-8'), capture_output=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         return dict(clipboard=len(str(value)))
@@ -426,10 +463,10 @@ class Hand:
         self.set_clipboard(value); return self.key('ctrl+v')
     def scroll(self, clicks, x=None, y=None):
         if x is None: x, y = self.position()
-        n = int(clicks); self.w._do_scroll(self._pair(x, y), self.region, 1 if n > 0 else -1, abs(n)); return dict(scrolled=n)
+        n = int(clicks); win32.scroll(whole(x), whole(y), self.region, 1 if n > 0 else -1, abs(n)); return dict(scrolled=n)
     def wheel(self, amount, x=None, y=None, horizontal=False):
         if x is None: x, y = self.position()
-        self.w._do_wheel(self._pair(x, y), self.region, int(amount), horizontal); return dict(wheel=int(amount), horizontal=horizontal)
+        win32.wheel(whole(x), whole(y), self.region, int(amount), horizontal); return dict(wheel=int(amount), horizontal=horizontal)
 
 @dataclass
 class Engine:
@@ -460,7 +497,7 @@ class Engine:
         Takes NONE (the full screen, the default) or a box on the 0-1000 screen; with no value a selector opens for the owner (drag a box, right-click for the full screen, Escape cancels). --capture, --retina and --hands then work in it, and --hands points are 0-1000 of it.
         Returns {region}. Use it to zoom the eye on a small area."""
         if not value:
-            value, code = HAND()._do_select_region()
+            value, code = win32.select_region()
             if code: raise SystemExit(code)
         elif value != 'NONE':
             box = list(map(int, value.split(','))) if re.fullmatch(r'\d+,\d+,\d+,\d+', value) else []
@@ -470,56 +507,48 @@ class Engine:
         """$CALL --capture
         Takes nothing. Screenshots the region into shots/<id>.png and writes screen.json.
         Returns {id, image, size, region, at}. Use it before you judge the screen and after you act; --retina and Jev read the latest capture."""
-        region = (self.work / 'region.txt').read_text('utf-8').strip()
-        png = HAND()._do_capture(region, 0, 0, 1.0)
+        region = self.desktop.region
+        image = win32.capture(region)
         shots = self.work / 'shots'; shots.mkdir(exist_ok=True)
         sid = time.strftime('%H%M%S') + f'{time.time_ns() // 1000 % 1000:03d}'
-        path = shots / f'{sid}.png'; path.write_bytes(png)
-        with Image.open(io.BytesIO(png)) as im: size = list(im.size)
-        v = dict(id=sid, image=str(path), size=size, region=region, at=round(time.time(), 3))
+        path = shots / f'{sid}.png'; path.write_bytes(win32.png(image))
+        v = dict(id=sid, image=str(path), size=list(image[1:]), region=region, at=round(time.time(), 3))
         write('screen.json', v); return v
     def windows(self, *_):
         """$CALL --windows
         Takes nothing. Lists visible, uncloaked, titled top-level windows, top of the z-order first.
         Returns {windows: [{hwnd, title, box (0-1000 of the screen), pid, minimized, topmost, foreground}]}. Use it to corroborate Retina, above all for a window hidden behind or over another, and to get the hwnd for --place."""
-        return dict(windows=[dict(zip(('hwnd', 'title', 'box', 'pid', 'minimized', 'topmost', 'foreground'), item)) for item in HAND()._do_window_list()])
+        return dict(windows=win32.windows())
     def _shot(self):
         screen = self.screen
-        with Image.open(screen['image']) as im: return screen, fara_fit(im.convert('RGB'))
-    def _eye(self, screen, image, text):
-        raw = self.vision.ask(text, image, screen['image'])
-        thoughts, call = fara_call(raw); arguments = call['arguments']
-        if arguments.get('action') not in FARA_ACTIONS: raise ValueError('unknown action')
-        point = fara_point(arguments)
+        return screen, fara_fit(load(screen['image']))
+    def _eye(self, screen, image, prompt):
+        thoughts, arguments, point = fara_parse(self.vision.ask(prompt, image, screen['image']))
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         return dict(capture=screen['id'], region=screen['region'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=fara_program(arguments, screen.get('size') or (0, 0)))
     def _zoom(self, screen, q, coarse):
         if coarse['action'] not in POINTER or not coarse['coordinate']: return dict(zoom=None)
         z = dict(box=zoom_box(coarse['coordinate']), coarse=coarse['coordinate'], fine=None)
-        try:
-            with Image.open(screen['image']) as im: fine = self._eye(screen, fara_fit(zoom_crop(im.convert('RGB'), z['box'])), q)
+        try: fine = self._eye(screen, fara_fit(zoom_crop(load(screen['image']), z['box'])), q)
         except Exception as e: return dict(zoom=z | dict(error=repr(e)[:300]))
         z |= dict(fine=fine['coordinate'], thoughts=fine['thoughts'])
         if fine['action'] not in POINTER or not fine['coordinate']: return dict(zoom=z)
         arguments = coarse['arguments'] | dict(action=fine['action'], coordinate=zoom_back(z['box'], fine['coordinate']))
         return dict(zoom=z, action=fine['action'], arguments=arguments, coordinate=arguments['coordinate'], program=fara_program(arguments, screen.get('size') or (0, 0)))
     def _pinned_shot(self):
-        pin = E('TRIDENT_RETINA_PIN')
+        pin = SET['retina-pin']
         if not pin: return None
         spec = json.loads(pin)
-        with Image.open(spec['image']) as im: image = fara_fit(im.convert('RGB'))
-        return dict(id=spec['id'], image=spec['image'], region=spec.get('region') or 'NONE', size=spec.get('size') or list(image.size)), image
+        image = fara_fit(load(spec['image']))
+        return dict(id=spec['id'], image=spec['image'], region=spec.get('region') or 'NONE', size=spec.get('size') or list(image[1:])), image
     def _retina_bg(self, question):
         shots = self.work / 'shots'; shots.mkdir(exist_ok=True)
         pid_path, out, err = shots / 'retina-bg.pid', shots / 'retina-bg.json', shots / 'retina-bg.err'
-        if pid_path.exists():
-            try: pid = int(pid_path.read_text('utf-8').strip())
-            except ValueError: pid = 0
-            if pid and alive(pid): return dict(background=True, busy=True, pid=pid, out=str(out), err=str(err))
+        if pid_path.exists() and win32.alive(pid := int(pid_path.read_text('utf-8').strip())): return dict(background=True, busy=True, pid=pid, out=str(out), err=str(err))
         screen = self.screen; out.unlink(missing_ok=True)
-        env = os.environ.copy(); env['TRIDENT_RETINA_PIN'] = json.dumps(dict(image=screen['image'], id=screen['id'], region=screen['region'], size=screen.get('size')))
+        pin = json.dumps(dict(image=screen['image'], id=screen['id'], region=screen['region'], size=screen.get('size')))
         with open(err, 'w', encoding='utf-8') as eh, open(out, 'w', encoding='utf-8') as oh:
-            proc = subprocess.Popen([str(PYTHON), '-B', str(SCRIPT), '--work', str(self.work), '--retina', question], cwd=str(self.work), env=env, stdin=subprocess.DEVNULL, stdout=oh, stderr=eh, creationflags=DETACHED, close_fds=True)
+            proc = subprocess.Popen([str(PYTHON), '-B', str(SCRIPT), *forwarded(**{'retina-pin': pin}), '--work', str(self.work), '--retina', question], cwd=str(self.work), stdin=subprocess.DEVNULL, stdout=oh, stderr=eh, creationflags=DETACHED, close_fds=True)
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
         """$CALL --retina "GOAL"
@@ -548,7 +577,7 @@ class Engine:
         shown, sx, sy = list(state), 1, 1
         if any(item['type'] == 'box' for item in q.values()):
             screen = self.screen
-            with Image.open(screen['image']) as im: image, sx, sy = jev_fit(im.convert('RGB'))
+            image, sx, sy = jev_fit(load(screen['image']))
             state.append(dict(type='image_url', image_url=dict(url=b64(image)))); shown.append(screen['image'])
         r, told = self.decision.ask(state, q, shown), []
         for name, a in r.get('answers', {}).items():
@@ -606,11 +635,11 @@ class Engine:
         """$CALL --ledger "LESSON"
         Takes this wake's lesson, 1-1200 characters: what worked, what failed, what to do first next time. A later call replaces it. At wake end Trident adds the minutes used and how the wake ended, keeps the last 12 wakes and shows them to the next wake and to Jev.
         Returns {wakes, lesson_len}. Call it at the end of every wake."""
-        if not E('TRIDENT_START'): raise SystemExit('the ledger is written inside a wake')
+        if not WAKE_START: raise SystemExit('the ledger is written inside a wake')
         lesson = WAKE.sub('', str(lesson)).strip()
         if not 0 < len(lesson) <= LEDGER_LESSON: raise ValueError(f'a lesson has 1-{LEDGER_LESSON} characters; write it shorter')
-        start = float(E('TRIDENT_START'))
-        self._enter(start, (float(E('TRIDENT_END')) - start) / 60 if E('TRIDENT_END') else '', 'open', lesson)
+        start = float(WAKE_START)
+        self._enter(start, (float(WAKE_END) - start) / 60 if WAKE_END else '', 'open', lesson)
         return dict(wakes=len(self._wakes()), lesson_len=len(lesson))
     def _wakes(self): return WAKE.split(self.ledger_path.read_text('utf-8'))[1:]
     def _enter(self, start, minutes, state, lesson):
@@ -626,22 +655,68 @@ class Engine:
         """$CALL --recall
         Takes nothing. Digests the journals of up to 5 earlier wakes, never this one.
         Returns {wakes: [{run, span, sentence, calls, errors, final}]}. Use it when the ledger is not enough."""
-        return dict(wakes=[digest(p) for p in sorted(ROOT.glob('run_*.md')) if p != RUN][-RECALL_RUNS:])
+        return dict(wakes=earlier())
     def learn(self, *_):
         """$CALL --learn
         Takes nothing. Totals the tool calls and errors of up to 5 earlier journals, never this one.
         Returns {wakes, errors, calls, dominant, text}. Use it to see where earlier wakes spent their calls."""
-        return trajectory(self)
+        return trajectory()
     def place(self, hwnd, left, top, right, bottom):
         """$CALL --place HWND LEFT TOP RIGHT BOTTOM
         Takes a window handle from --windows and a 0-1000 screen box. Restores the window, moves it there and clears topmost.
         Returns {hwnd, box, moved, err}. Use it to lay windows side by side; capture afterwards."""
-        return HAND()._do_place(hwnd, left, top, right, bottom)
+        return win32.place(hwnd, left, top, right, bottom)
     def pilot(self, task='', steps=''):
-        """$CALL --pilot "TASK" [STEPS]
-        Takes a task for Fara and an optional action limit (default 30). Fara is the brain: Microsoft's Fara 1.5 loop (system prompt, screenshot + task, its own replies fed back, the 3 newest screenshots) drives the hand on the region until terminate, ask_user_question, an error, the stop file or the limit. Every step is journaled with its screenshot; the trace is shots/pilot_<run>.json.
-        Returns {task, status, actions, answer, facts, final, trace, journal}. The owner runs it to test Fara as the brain; it is not a mind tool."""
-        return module('trident_pilot', ROOT / 'pilot.py').run(self, sys.modules[__name__], task, steps)
+        task, steps = str(task).strip(), int(steps or STEPS)
+        if not task: raise ValueError('pilot needs a task')
+        auto = SET['pilot-autoreply']
+        region = self.desktop.region
+        trace_path = self.work / 'shots' / f'pilot_{WAKE_ID}.json'
+        trace = dict(task=task, steps=steps, region=region, model=VISION_MODEL, url=self.vision.url, max_images=MAX_IMAGES, records=[])
+        def save(): trace_path.write_text(json.dumps(trace, ensure_ascii=False, indent=1), 'utf-8')
+        log('pilot', dict(text=f'PILOT\n\nTASK: {task}\n\nFara drives (Microsoft Fara15Agent loop), at most {steps} actions, region {region}, '
+                               f'{MAX_IMAGES} newest screenshots per call, pause {SCREENSHOT_DELAY}s after each action. Trace: {trace_path}'))
+        history, facts, pending, status, answer = [], [], '', 'max steps', ''
+        obs = self.capture()
+        for n in range(1, steps + 1):
+            if self.sentinel.exists(): status = 'stop file'; break
+            image = fara_fit(load(obs['image']))
+            url = b64(image)
+            if n == 1: history.append(user_turn(url, task, original=True))
+            elif pending.startswith('USER:'): history.append(user_turn(url, pending[5:], keep=pending[5:]))
+            else: history.append(user_turn(url, f'{pending}\n{NEXT}' if pending else NEXT))
+            pending = ''
+            payload = messages(FARA_SYSTEM, history)
+            t0 = time.time()
+            try: raw, body = self.vision.chat(payload, dict(step=n, image=obs['image'], sent_size=list(image[1:]), images=sum(map(has_image, payload)), text=payload[-1]['content'][-1]['text']))
+            except Exception as e: status = f'fara error: {e!r}'; log('pilot', dict(text=f'### step {n}\n- fara error: {e!r}')); break
+            history.append(dict(role='assistant', content=raw))
+            tm = (body or {}).get('timings') or {}
+            info = f"{time.time() - t0:.1f}s, prompt {tm.get('prompt_n', '?')} tok (cached {tm.get('cache_n', '?')}), reply {tm.get('predicted_n', '?')} tok"
+            record = dict(step=n, screenshot=obs['image'], sent_size=list(image[1:]), reply=raw, seconds=round(time.time() - t0, 1), timings=tm)
+            try:
+                thoughts, args, point = fara_parse(raw)
+                px = win32.point(*point, region) if point else None
+                stop, result, pending = act(self, args, obs['size'], facts)
+            except Exception as e:
+                record.update(error=repr(e)); trace['records'].append(record)
+                log('pilot', dict(text=f'### step {n}\n- reply: {raw}\n- invalid: {e!r}')); status = f'invalid action: {e}'; break
+            record.update(thoughts=thoughts, action=args.get('action'), arguments=args, coordinate=list(point) if point else None, screen_px=list(px) if px else None, result=result)
+            trace['records'].append(record)
+            log('pilot', dict(text=step_md(n, obs, image[1:], thoughts, args, point, px, result, info)))
+            save()
+            if args.get('action') == 'ask_user_question' and auto:
+                pending, stop = 'USER:' + AUTO_REPLY, False
+            if stop:
+                status, answer = args.get('action'), result; break
+            time.sleep(SCREENSHOT_DELAY)
+            obs = self.capture()
+        final = self.capture()
+        trace.update(status=status, answer=answer, facts=facts, final=final['image'],
+                     last_messages=[dict(role=m['role'], content=[c if c.get('type') != 'image_url' else dict(type='image_url', image_url='<screenshot>') for c in m['content']] if isinstance(m['content'], list) else m['content']) for m in messages(FARA_SYSTEM, history)[1:]])
+        save()
+        log('pilot', dict(text=f'PILOT END\n\n- status: {status}\n- actions: {len(trace["records"])}\n- answer: {answer or "-"}\n- facts: {facts}\n- final screenshot: {final["image"]}'))
+        return dict(task=task, status=status, actions=len(trace['records']), answer=answer, facts=facts, final=final['image'], trace=str(trace_path), journal=str(RUN))
     def stop(self, *_):
         """$CALL --stop
         Takes nothing. Ends the wake: writes the stop file, so the mind is stopped and the ledger is sealed.
@@ -651,41 +726,32 @@ class Engine:
         v = v | clock(); write(self.result, v)
         if sys.stdout.isatty(): log(name, v)
         else: print(json.dumps(v, ensure_ascii=False), flush=True)
-    def _mind_prompt(self, sentence, minutes, end):
-        call = f"& '{VENV if VENV.is_file() else PYTHON}' '{SCRIPT}' --work '{self.work}'"
-        docs = [f.__doc__.replace('$CALL', call) for n, f in tools().items() if n not in ('mind', 'pilot') and f.__doc__]
+    def _mind_prompt(self, sentence, minutes, start, end):
+        call = ' '.join([f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"] + [arg if arg.startswith('--') else f"'{arg}'" for arg in forwarded(**{'wake-start': str(start), 'wake-end': str(end or '')})])
+        docs = [f.__doc__.replace('$CALL', call) for f in tools().values() if f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
-        return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory(self)['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
+        return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
-        """$CALL --mind "SENTENCE" [MINUTES]
-        Takes the owner sentence and an optional budget in minutes (or TRIDENT_MINUTES). Writes goal.txt and prompt.txt and spawns a new Cursor CLI agent in a job object on brain_model(sentence), never with --resume or --continue.
-        Returns nothing; the journal shows the wake and the ledger is sealed at its end. Use it to start a wake; the owner runs it."""
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
         if str(sentence).strip(): text(self.goal, str(sentence).strip())
         prompt_file = self.work / 'prompt.txt'
-        text(prompt_file, self._mind_prompt(sentence, minutes, end))
+        text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
         vendor = self.work / 'agent'
         profile = vendor / 'home/.cursor'; profile.mkdir(parents=True, exist_ok=True)
         for kind in ('Local', 'Roaming'): (vendor / 'home/AppData' / kind).mkdir(parents=True, exist_ok=True)
         temp = ROOT.parent / 'temp'; temp.mkdir(exist_ok=True)
-        env = os.environ | dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1', TRIDENT_START=str(start), TRIDENT_END=str(end or ''))
+        env = os.environ | dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
         env.pop('OPENROUTER_API_KEY', None); write(profile / 'cli-config.json', CLI_CONFIG)
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists())
         boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         argv = [str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '--force', '-p', '--model', brain_model(sentence), '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)]
-        if '--resume' in argv or '--continue' in argv: raise SystemExit('a wake starts a new agent')
         with ExitStack() as stack:
             stack.callback(self._seal, start, minutes)
             p = subprocess.Popen(argv, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
             LIVE['agent'] = p
             stack.callback(p.wait); stack.callback(p.kill)
-            job = win32job.CreateJobObject(None, '')
-            limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-            limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
-            win32job.AssignProcessToJobObject(job, int(p._handle))
-            stack.callback(job.Close)
+            stack.callback(win32.kill_on_close(p._handle))
             def on_stop():
                 while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
                 p.kill()
@@ -712,7 +778,7 @@ EYES. --retina is Fara, the only image-recognition tool. Fara is a computer-use 
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
-THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless TRIDENT_MODEL is set or the sentence names a grok-4.7 slug.
+THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
 
 EVOLVE. You may change your own source. When a tool fails, fix it or grow skills/NAME.py defining NAME(engine, *args) whose docstring starts with $CALL --NAME. Keep the body small.
 
@@ -723,34 +789,26 @@ FINISH. Observe again, grade each deliverable met, partial, or not met with evid
 The ledger and your tools follow.'''
 
 Engine.jev.__doc__ = Engine.jev.__doc__.replace('JEV_USAGE', JEV_USAGE)
-def tools():
-    return {n: f for n, f in vars(Engine).items() if callable(f) and not n.startswith('_') and not isinstance(f, (property, cached_property))}
+def tools(): return {n: f for n, f in vars(Engine).items() if callable(f) and not n.startswith('_')}
 def grow(folder):
-    folder = Path(folder)
-    if not folder.is_dir(): return
     for path in sorted(folder.glob('*.py')):
         if path.stem in vars(Engine): raise SystemExit(f'skill {path.stem} shadows a tool')
-        setattr(Engine, path.stem, getattr(module('skill_' + path.stem, path), path.stem))
+        spec = importlib.util.spec_from_file_location('skill_' + path.stem, path)
+        skill = importlib.util.module_from_spec(spec); spec.loader.exec_module(skill)
+        setattr(Engine, path.stem, getattr(skill, path.stem))
 grow(ROOT / 'skills')
 HALT, LIVE = {}, {}
 def note_halt(reason):
     if HALT.get('reason'): return
     HALT['reason'] = reason
     agent = LIVE.get('agent')
-    if agent is not None and agent.poll() is None:
-        try: agent.kill()
-        except Exception: pass
-    try: log('stopped', dict(reason=reason))
-    except Exception: pass
-def _on_signal(signum, _frame):
+    if agent is not None and agent.poll() is None: agent.kill()
+    log('stopped', dict(reason=reason))
+def on_signal(signum, _frame):
     note_halt('ctrl+c' if signum == signal.SIGINT else 'ctrl+break'); raise KeyboardInterrupt
-def install_halt():
-    signal.signal(signal.SIGINT, _on_signal)
-    if hasattr(signal, 'SIGBREAK'): signal.signal(signal.SIGBREAK, _on_signal)
 def main():
-    ctypes.WinDLL('shcore', use_last_error=True).SetProcessDpiAwareness(2)
-    install_halt()
-    parser = argparse.ArgumentParser(add_help=False)
+    signal.signal(signal.SIGINT, on_signal); signal.signal(signal.SIGBREAK, on_signal)
+    parser = argparse.ArgumentParser(add_help=False, parents=[OPTIONS])
     group = parser.add_mutually_exclusive_group()
     for name in tools(): group.add_argument('--' + name, dest='entry', action='store_const', const=name)
     for flag in ('--fresh', '--journal'): parser.add_argument(flag, action='store_true')

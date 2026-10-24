@@ -1,5 +1,0 @@
-[project]
-name = "trident"
-version = "0"
-requires-python = ">=3.11"
-dependencies = ["pillow", "pywin32"]

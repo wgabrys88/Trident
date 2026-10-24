@@ -1,13 +1,6 @@
 *
 !/main.py
 !/win32.py
-!/README.md
 !/.gitignore
-!/pyproject.toml
-!/pilot.py
 !/skills/
 !/skills/*.py
-!/tests/
-!/tests/*.py
-!/docs/
-!/docs/*.md
