@@ -527,14 +527,13 @@ class Engine:
         if thoughts and 'thoughts' not in arguments: arguments['thoughts'] = thoughts
         return dict(capture=screen['id'], region=screen['region'], thoughts=thoughts, action=arguments.get('action'), arguments=arguments, coordinate=list(point) if point else None, program=fara_program(arguments, screen.get('size') or (0, 0)))
     def _zoom(self, screen, q, coarse):
-        if coarse['action'] not in POINTER or not coarse['coordinate']: return dict(zoom=None)
-        z = dict(box=zoom_box(coarse['coordinate']), coarse=coarse['coordinate'], fine=None)
-        try: fine = self._eye(screen, fara_fit(zoom_crop(load(screen['image']), z['box'])), q)
-        except Exception as e: return dict(zoom=z | dict(error=repr(e)[:300]))
-        z |= dict(fine=fine['coordinate'], thoughts=fine['thoughts'])
-        if fine['action'] not in POINTER or not fine['coordinate']: return dict(zoom=z)
-        arguments = coarse['arguments'] | dict(action=fine['action'], coordinate=zoom_back(z['box'], fine['coordinate']))
-        return dict(zoom=z, action=fine['action'], arguments=arguments, coordinate=arguments['coordinate'], program=fara_program(arguments, screen.get('size') or (0, 0)))
+        if coarse['action'] not in POINTER or not coarse['coordinate']: return {}
+        box = zoom_box(coarse['coordinate'])
+        try: fine = self._eye(screen, fara_fit(zoom_crop(load(screen['image']), box)), q)
+        except Exception: return {}
+        if fine['action'] not in POINTER or not fine['coordinate']: return {}
+        arguments = coarse['arguments'] | dict(action=fine['action'], coordinate=zoom_back(box, fine['coordinate']))
+        return dict(action=fine['action'], arguments=arguments, coordinate=arguments['coordinate'], program=fara_program(arguments, screen.get('size') or (0, 0)))
     def _pinned_shot(self):
         pin = SET['retina-pin']
         if not pin: return None
@@ -552,7 +551,7 @@ class Engine:
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
         """$CALL --retina "GOAL"
-        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had. "zoom GOAL" (also "bg zoom GOAL") asks again on a crop of the same capture around Fara's first point and returns that finer point plus zoom {box, coarse, fine}; use it for small targets such as icons, links, swatches and arrows.
+        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had. "zoom GOAL" (also "bg zoom GOAL") asks again on a crop of the same capture around Fara's first point and returns only that finer point; use it for small targets such as icons, links, swatches and arrows.
         Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}. coordinate is the target point; program is a --hands program for the proposed action, yours to run, change or ignore. A short question ("What does the <window> say last?") comes back as action terminate with arguments.answer, sometimes only after a click it proposes first. Fara does not return lists or boxes: ask one goal or one fact per call, and get a region from two or more point goals or from Jev."""
         q = str(question).strip()
         if not q or q == 'bg': raise ValueError('retina needs a goal')
@@ -762,7 +761,9 @@ class Engine:
                 except json.JSONDecodeError: finished = False
                 if finished: p.kill(); break
 
-MIND = '''You are Trident, a living program. Your body is this directory: main.py holds your tools, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill and bring it into main.py when it is what you are. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
+MIND = '''SEEING THE SCREEN IS DONE ONLY WITH --retina AND --jev; ANY OTHER VISUAL ANALYSIS, INCLUDING READING IMAGE FILES, PIXEL-COUNTING SCRIPTS, OR PYTHON ON CAPTURES, IS STRICTLY FORBIDDEN.
+
+You are Trident, a living program. Your body is this directory: main.py holds your tools, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill and bring it into main.py when it is what you are. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
 
 WORK IN SHORT LOOPS. Make your first tool call before any long reasoning. Probe, measure, adjust.
 
@@ -775,6 +776,8 @@ LOOK FIRST. Before you plan, observe the sentence's subject: files and command o
 CHECKLIST. Split the sentence into numbered deliverables and keep them at the top of story.txt. A deliverable is met only when this wake showed the evidence. One you cannot meet stays not met; never redefine it into something easier.
 
 EYES. --retina is Fara, the only image-recognition tool. Fara is a computer-use agent: give it one goal that names the window ("In the <window>, click the <target>") and it answers with one action whose coordinate is the target point, 0-{norm} of the capture. It does not list or box: never ask it for an inventory or a bounding box; ask one goal or one short fact per call. It grounds words on any matching text on screen, so name the window and describe the target visually. It can miss a hidden window and can invent items; corroborate with --windows and, when it matters, by reading the capture.
+
+Your score goes up when Retina does the navigating: replan on every wake, feed --retina one small concrete step at a time, follow up with a second, narrower question when needed, and act only on what she returns.
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
