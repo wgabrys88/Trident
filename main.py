@@ -95,11 +95,19 @@ FARA_KEY = {k: k for k in ('ctrl', 'shift', 'alt', 'win', 'enter', 'esc', 'tab',
     'arrowup': 'up', 'arrowdown': 'down', 'arrowleft': 'left', 'arrowright': 'right'}
 _SERVED = False
 
+def logged_file(path, value):
+    body = '\n'.join((' ' + line) if line.startswith('##') else line for line in str(value).split('\n'))
+    if len(body) > 1500: body = body[:1500]
+    return f"{path} ({len(value)} chars)\n{body}"
+def blank_frame(pixels):
+    n = len(pixels) // 4
+    zero = bytes(n)
+    return bool(n) and pixels[0::4] == zero and pixels[1::4] == zero and pixels[2::4] == zero
 def text(p, v):
     p = Path(p)
     t = p.with_name(p.name + '.' + uuid.uuid4().hex + '.pending')
     t.write_bytes(v.encode('utf-8')); t.replace(p)
-    log('file', dict(path=str(p), text=v if len(v) <= 4000 else '', size=len(v)))
+    log('file', dict(text=logged_file(p, v)))
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def contents(p): return p.read_bytes() if p.exists() else b''
@@ -122,13 +130,41 @@ def reply(body):
     if isinstance(body, dict) and 'answers' in body: return json.dumps(body['answers'], ensure_ascii=False)
     return json.dumps(body, ensure_ascii=False, default=str)
 THOUGHT = []
+def clip_thought(text, limit=3000):
+    text = text.strip()
+    if len(text) <= limit: return text
+    cut = text.rfind(' ', 0, limit)
+    if cut < limit // 2: cut = limit
+    return text[:cut] + ' …'
+def flush_thought():
+    thought = clip_thought(''.join(THOUGHT)); THOUGHT.clear()
+    if thought: log('think', dict(text=thought))
+def shell_command(cmd):
+    names = set(tools())
+    kept = []
+    for segment in cmd.splitlines() or ['']:
+        marks = [m.start() for m in re.finditer(r'--([A-Za-z0-9-]+)\b', segment) if m.group(1) in names]
+        kept.append((segment[marks[0]:] if marks else segment).strip())
+    return '\n'.join(line for line in kept if line)
+def shell_log(payload, started):
+    if not isinstance(payload, dict): return str(payload)[:4000]
+    if started: return shell_command(str(payload.get('command') or ''))[:4000]
+    success = payload.get('success')
+    if isinstance(success, dict):
+        if 'exitCode' in success or 'stdout' in success:
+            line = f"exit {success.get('exitCode')}" + (' background' if payload.get('isBackground') else '')
+            out, err = success.get('stdout') or '', success.get('stderr') or ''
+            return '\n'.join(part for part in (line, out, err) if part)[:8000]
+        return json.dumps(success, default=str)[:2000]
+    if payload.get('error') is not None: return str(payload.get('error'))[:2000]
+    return json.dumps(payload, default=str)[:2000]
 def narrate(kind, data):
     try: event = json.loads(data) if kind == 'agent' else None
     except json.JSONDecodeError: event = None
     if isinstance(event, dict) and event.get('type') == 'thinking':
         if event.get('subtype') == 'delta': THOUGHT.append(event.get('text') or '')
         return []
-    now, thought = time.strftime('%H:%M:%S'), ''.join(THOUGHT).strip()[:3000]
+    now, thought = time.strftime('%H:%M:%S'), clip_thought(''.join(THOUGHT))
     THOUGHT.clear()
     return ([dict(t=now, kind='think', text=thought)] if thought else []) + event_rows(now, kind, data, event)
 def event_rows(now, kind, data, event):
@@ -136,7 +172,7 @@ def event_rows(now, kind, data, event):
     if kind != 'agent':
         if isinstance(data, dict):
             shown = data.get('text', json.dumps({k: v for k, v in data.items() if k != 'body'}, default=str))
-            return [dict(t=now, kind=kind, text=str(shown)[:2000])]
+            return [dict(t=now, kind=kind, text=str(shown)[:{'report': 8000, 'think': 4000}.get(kind, 2000)])]
         return [dict(t=now, kind=kind, text=str(data)[:2000])]
     if not isinstance(event, dict): return [dict(t=now, kind='agent', text=str(data)[:2000])]
     typ, sub = event.get('type'), event.get('subtype')
@@ -151,24 +187,31 @@ def event_rows(now, kind, data, event):
         name = next((k[:-8] for k in call if str(k).endswith('ToolCall')), 'tool')
         body = call.get(name + 'ToolCall') or {}
         payload = body.get('args') if sub == 'started' else body.get('result')
-        return [dict(t=now, kind='call' if sub == 'started' else 'result', name=name, text=json.dumps(payload, default=str)[:1500])]
+        text = shell_log(payload, sub == 'started') if name == 'shell' else json.dumps(payload, default=str)[:1500]
+        return [dict(t=now, kind='call' if sub == 'started' else 'result', name=name, text=text)]
     if typ == 'system' and sub == 'init': return [dict(t=now, kind='start', text=str(event.get('model') or ''))]
-    if typ == 'result': return [dict(t=now, kind='say', text=str(event.get('result') or '')[:2000])]
+    if typ == 'result': return [dict(t=now, kind='say', text=str(event.get('result') or '')[:8000])]
     return []
 def render(item):
     kind = {'call': 'request', 'result': 'response', 'req': 'request', 'resp': 'response'}.get(item['kind'], item['kind'])
     name = f" {item['name']}" if item.get('name') else ''
     return f"## {item['t']} {kind}{name}\n\n{item.get('text') or ''}\n\n".encode()
+FULL = frozenset(('think', 'say', 'user', 'start', 'report', 'exit'))
+def console_row(item):
+    rendered = render(item)
+    kind = {'call': 'request', 'result': 'response', 'req': 'request', 'resp': 'response'}.get(item['kind'], item['kind'])
+    return rendered if kind in FULL else rendered.split(b'\n\n', 1)[0] + b'\n'
 def log(kind, data):
     serve()
-    blob = b''.join(render(item) for item in narrate(kind, data))
+    items = narrate(kind, data)
+    blob = b''.join(render(item) for item in items)
     if not blob: return
     with open(RUN, 'ab') as handle:
         handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         handle.write(blob); handle.flush()
         handle.seek(0); msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
     if sys.stdout.isatty():
-        sys.stdout.buffer.write(blob); sys.stdout.buffer.flush()
+        sys.stdout.buffer.write(b''.join(console_row(item) for item in items)); sys.stdout.buffer.flush()
 def journal_target(): return Path((ROOT / 'journal.path').read_text('utf-8').strip())
 def port_open():
     try:
@@ -330,7 +373,7 @@ def trajectory():
 def digest(path):
     s = path.read_text('utf-8', 'replace')
     heads = re.findall(r'(?m)^## (\d\d:\d\d:\d\d) (\S+)(?: (\S+))?$', s)
-    said = re.findall(r'(?ms)^## \S+ say\n\n(.*?)(?=^## |\Z)', s)
+    said = re.findall(r'(?ms)^## \S+ (?:say|report)\n\n(.*?)(?=^## |\Z)', s)
     sentence = re.search(r'(?ms)^SENTENCE\n\n(.*?)(?=^## |\Z)', s)
     return dict(run=path.stem, span=[heads[0][0], heads[-1][0]] if heads else [], sentence=sentence.group(1).strip()[:RECALL_CHARS] if sentence else '', calls=dict(Counter(n for _, k, n in heads if k == 'request' and n)), errors=sum(k == 'err' for _, k, _ in heads), final=said[-1].strip()[:RECALL_CHARS] if said else '')
 def user_turn(url, prompt, original=False, keep=None):
@@ -430,7 +473,7 @@ class Vision(Oracle):
 class Decision(Oracle):
     headers = property(lambda self: {'Authorization': 'Bearer ' + (ROOT.parent / '.env').read_text('utf-8-sig').strip().strip('"\'')})
     def ask(self, state, questions, shown):
-        return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(state=shown, questions=questions))
+        return self.post(dict(model=DECISION_MODEL, state=state, questions=questions), dict(questions=questions, state=shown))
 
 def whole(v): return int(round(float(v)))
 class Hand:
@@ -513,12 +556,19 @@ class Engine:
         sid = time.strftime('%H%M%S') + f'{time.time_ns() // 1000 % 1000:03d}'
         path = shots / f'{sid}.png'; path.write_bytes(win32.png(image))
         v = dict(id=sid, image=str(path), size=list(image[1:]), region=region, at=round(time.time(), 3))
+        pixels = image[0]
+        if blank_frame(pixels): v['blank'] = True
         write('screen.json', v); return v
     def windows(self, *_):
         """$CALL --windows
         Takes nothing. Lists visible, uncloaked, titled top-level windows, top of the z-order first.
         Returns {windows: [{hwnd, title, box (0-1000 of the screen), pid, minimized, topmost, foreground}]}. Use it to corroborate Retina, above all for a window hidden behind or over another, and to get the hwnd for --place."""
         return dict(windows=win32.windows())
+    def _blank(self):
+        path = self.work / 'screen.json'
+        if not path.exists(): return None
+        screen = read(path)
+        return screen if isinstance(screen, dict) and screen.get('blank') else None
     def _shot(self):
         screen = self.screen
         return screen, fara_fit(load(screen['image']))
@@ -551,10 +601,13 @@ class Engine:
         text(pid_path, str(proc.pid)); return dict(background=True, busy=False, pid=proc.pid, capture=screen['id'], out=str(out), err=str(err))
     def retina(self, question=''):
         """$CALL --retina "GOAL"
-        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had. "zoom GOAL" (also "bg zoom GOAL") asks again on a crop of the same capture around Fara's first point and returns only that finer point; use it for small targets such as icons, links, swatches and arrows.
+        Takes one goal for the latest capture that names the window, e.g. "In the <window>, click the <target>", sent to Fara as it is. Fara is a computer-use agent: it answers with exactly one action and no memory of earlier calls; this is the only image-recognition tool. "bg GOAL" returns at once and writes shots/retina-bg.json for the capture you had. "zoom GOAL" (also "bg zoom GOAL") asks again on a crop of the same capture around Fara's first point and returns only that finer point; use it for small targets such as icons, links, swatches and arrows. This call often takes longer than 30 seconds, so set the shell timeout higher or to 0, as with a long install.
         Returns {task, capture, region, thoughts, action, arguments, coordinate (0-1000 of the capture), program}. coordinate is the target point; program is a --hands program for the proposed action, yours to run, change or ignore. A short question ("What does the <window> say last?") comes back as action terminate with arguments.answer, sometimes only after a click it proposes first. Fara does not return lists or boxes: ask one goal or one fact per call, and get a region from two or more point goals or from Jev."""
         q = str(question).strip()
         if not q or q == 'bg': raise ValueError('retina needs a goal')
+        if not SET['retina-pin']:
+            screen = self._blank()
+            if screen: return dict(blank=True, capture=screen.get('id'), region=screen.get('region'))
         if q.startswith('bg '):
             q = q[3:].strip()
             if not q: raise ValueError('retina needs a goal')
@@ -572,17 +625,24 @@ class Engine:
         Takes a neutral narrative and typed questions. Jev also receives story.txt, ledger.md and goal.txt; a box question also receives the current capture.
         Returns his answers with probabilities and confidence and a summary line per question; a box is left top right bottom on 0-1000 of the capture. Every choice includes change_approach. Use it before a decision with two or more ways, to locate a target, and before you claim done."""
         if not str(narrative).strip() or not blocks: raise ValueError(JEV_USAGE)
-        q, state = questions(blocks), ['STORY: ' + self.story_path.read_text('utf-8'), 'LEDGER: ' + self.ledger_path.read_text('utf-8'), 'WHY: ' + narrative, 'GOAL: ' + self.goal.read_text('utf-8')]
-        shown, sx, sy = list(state), 1, 1
-        if any(item['type'] == 'box' for item in q.values()):
-            screen = self.screen
-            image, sx, sy = jev_fit(load(screen['image']))
-            state.append(dict(type='image_url', image_url=dict(url=b64(image)))); shown.append(screen['image'])
+        q = questions(blocks)
+        boxed = any(item['type'] == 'box' for item in q.values())
+        if boxed:
+            screen = self._blank()
+            if screen: return dict(blank=True, by='jev', capture=screen.get('id'))
+        state = ['STORY: ' + self.story_path.read_text('utf-8'), 'LEDGER: ' + self.ledger_path.read_text('utf-8'), 'WHY: ' + narrative, 'GOAL: ' + self.goal.read_text('utf-8')]
+        shown, sx, sy = [f"{item.split(':', 1)[0]}: {len(item)} chars" for item in state], 1, 1
+        if boxed:
+            shot = self.screen
+            image, sx, sy = jev_fit(load(shot['image']))
+            state.append(dict(type='image_url', image_url=dict(url=b64(image)))); shown.append(shot['image'])
         r, told = self.decision.ask(state, q, shown), []
         for name, a in r.get('answers', {}).items():
             if a['type'] == 'box': a['box'] = {k: min(1, v * (sx if k in ('left', 'right') else sy)) for k, v in a['box'].items()}
             if a['type'] == 'choice': told.append(f"{name}: {a['choice']} ({', '.join(f'{k} {v:.2f}' for k, v in a['probabilities'].items())}; conf {a['confidence']:.2f})")
-            elif a['type'] == 'noul': told.append(f"{name}: noul {a['noul']:.2f}")
+            elif a['type'] == 'noul':
+                p = a.pop('noul'); a['type'] = 'yes'; a['yes'] = p
+                told.append(f"{name}: yes {p:.2f}")
             elif a['type'] == 'box':
                 b = a['box']; told.append(f"{name}: box {int(round(b['left']*NORM))} {int(round(b['top']*NORM))} {int(round(b['right']*NORM))} {int(round(b['bottom']*NORM))} conf {a['confidence']:.2f}")
             else: told.append(f"{name}: score {a['score']:.2f}")
@@ -719,8 +779,9 @@ class Engine:
     def stop(self, *_):
         """$CALL --stop
         Takes nothing. Ends the wake: writes the stop file, so the mind is stopped and the ledger is sealed.
+        The wake ends after this call, so the next message must be the final report and nothing else.
         Returns nothing; the call exits. Use it when the sentence is done or cannot be done."""
-        self.sentinel.touch(); log('file', dict(path=str(self.sentinel), text='')); sys.exit(0)
+        self.sentinel.touch(); log('file', dict(text=logged_file(self.sentinel, ''))); sys.exit(0)
     def _emit(self, name, v):
         v = v | clock(); write(self.result, v)
         if sys.stdout.isatty(): log(name, v)
@@ -733,14 +794,15 @@ class Engine:
     def mind(self, sentence='', minutes=MINUTES):
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
+        text(self.work / 'region.txt', 'NONE')
         if str(sentence).strip(): text(self.goal, str(sentence).strip())
         prompt_file = self.work / 'prompt.txt'
         text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
         vendor = self.work / 'agent'
-        profile = vendor / 'home/.cursor'; profile.mkdir(parents=True, exist_ok=True)
-        for kind in ('Local', 'Roaming'): (vendor / 'home/AppData' / kind).mkdir(parents=True, exist_ok=True)
+        profile = vendor / 'config'; profile.mkdir(parents=True, exist_ok=True)
+        (vendor / 'data').mkdir(parents=True, exist_ok=True)
         temp = ROOT.parent / 'temp'; temp.mkdir(exist_ok=True)
-        env = os.environ | dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
+        env = os.environ | dict(CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
         env.pop('OPENROUTER_API_KEY', None); write(profile / 'cli-config.json', CLI_CONFIG)
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists())
         boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
@@ -753,13 +815,21 @@ class Engine:
             stack.callback(win32.kill_on_close(p._handle))
             def on_stop():
                 while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
-                p.kill()
+                if not self.sentinel.exists(): return
+                if not HALT.get('reason'): HALT['reason'] = 'stopped'
+                deadline = time.time() + 60
+                while p.poll() is None and time.time() < deadline: time.sleep(0.1)
+                if p.poll() is None: p.kill()
             threading.Thread(target=on_stop, daemon=True).start()
+            finished = False
             for raw in p.stdout:
                 line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
                 try: finished = json.loads(line).get('type') == 'result'
                 except json.JSONDecodeError: finished = False
                 if finished: p.kill(); break
+            if self.sentinel.exists() and not finished:
+                log('report', dict(text=self.story_path.read_text('utf-8') if self.story_path.exists() else ''))
+            flush_thought()
 
 MIND = '''SEEING THE SCREEN IS DONE ONLY WITH --retina AND --jev; ANY OTHER VISUAL ANALYSIS, INCLUDING READING IMAGE FILES, PIXEL-COUNTING SCRIPTS, OR PYTHON ON CAPTURES, IS STRICTLY FORBIDDEN.
 
@@ -821,7 +891,7 @@ def main():
     if not a.entry: parser.error('need a tool flag')
     serve()
     started = time.time()
-    atexit.register(lambda: log('exit', dict(argv=sys.argv[1:], seconds=round(time.time() - started, 1), reason=HALT.get('reason') or 'ended')))
+    atexit.register(lambda: log('exit', dict(text=f"{a.entry} {round(time.time() - started, 1)}s {HALT.get('reason') or 'ended'}")))
     try:
         engine = Engine(Path(a.work).resolve(), a.fresh)
         if engine.sentinel.exists() and a.entry not in ('stop', 'mind'):

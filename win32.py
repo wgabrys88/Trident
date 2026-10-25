@@ -132,8 +132,9 @@ def windows():
             user32.GetWindowTextW(hwnd, title, length + 1)
             user32.GetWindowRect(hwnd, ctypes.byref(rect))
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            found.append(dict(hwnd=hwnd, title=title.value, box=[rect.left * NORM // width, rect.top * NORM // height, rect.right * NORM // width, rect.bottom * NORM // height],
-                              pid=pid.value, minimized=bool(user32.IsIconic(hwnd)), topmost=bool(user32.GetWindowLongW(hwnd, -20) & 0x00000008), foreground=hwnd == front))
+            minimized = bool(user32.IsIconic(hwnd))
+            box = None if minimized else [rect.left * NORM // width, rect.top * NORM // height, rect.right * NORM // width, rect.bottom * NORM // height]
+            found.append(dict(hwnd=hwnd, title=title.value, box=box, pid=pid.value, minimized=minimized, topmost=bool(user32.GetWindowLongW(hwnd, -20) & 0x00000008), foreground=hwnd == front))
         return True
 
     user32.EnumWindows(ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)(visit), 0)
