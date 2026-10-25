@@ -12,7 +12,7 @@ SCRIPT, ROOT, PYTHON = Path(__file__).resolve(), Path(__file__).resolve().parent
 NVIDIA_HOST = '192.168.16.31'
 SETTINGS = {'vision-url': f'http://{NVIDIA_HOST}:1234', 'vision-model': 'retina', 'fara-width': 1440, 'fara-max-tokens': 2048, 'fara-zoom': 250, 'shot-delay': 1.5,
             'jev-model': 'typesafe/jev-1.14-20261014', 'mind-model': '', 'minutes': '', 'pilot-autoreply': False,
-            'run': time.strftime('%Y%m%d_%H%M%S'), 'wake-start': '', 'wake-end': '', 'retina-pin': ''}
+            'run': time.strftime('%Y%m%d_%H%M%S'), 'wake-start': '', 'wake-end': '', 'retina-pin': '', 'pass-calls': 10}
 OPTIONS = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
 for name, default in SETTINGS.items():
     OPTIONS.add_argument('--' + name, **(dict(action='store_true') if default is False else dict(type=type(default), default=default)))
@@ -790,14 +790,13 @@ class Engine:
         call = ' '.join([f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"] + [arg if arg.startswith('--') else f"'{arg}'" for arg in forwarded(**{'wake-start': str(start), 'wake-end': str(end or '')})])
         docs = [f.__doc__.replace('$CALL', call) for f in tools().values() if f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
-        return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
+        return '\n\n'.join((MIND.format(budget=budget, norm=NORM, calls=SET['pass-calls']), 'STORY', self.story_path.read_text('utf-8').strip(), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
         text(self.work / 'region.txt', 'NONE')
         if str(sentence).strip(): text(self.goal, str(sentence).strip())
         prompt_file = self.work / 'prompt.txt'
-        text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
         vendor = self.work / 'agent'
         profile = vendor / 'config'; profile.mkdir(parents=True, exist_ok=True)
         (vendor / 'data').mkdir(parents=True, exist_ok=True)
@@ -807,29 +806,39 @@ class Engine:
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists())
         boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         argv = [str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '--force', '-p', '--model', brain_model(sentence), '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)]
+        limit, saw = SET['pass-calls'], False
         with ExitStack() as stack:
             stack.callback(self._seal, start, minutes)
-            p = subprocess.Popen(argv, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-            LIVE['agent'] = p
-            stack.callback(p.wait); stack.callback(p.kill)
-            stack.callback(win32.kill_on_close(p._handle))
-            def on_stop():
-                while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
-                if not self.sentinel.exists(): return
-                if not HALT.get('reason'): HALT['reason'] = 'stopped'
-                deadline = time.time() + 60
-                while p.poll() is None and time.time() < deadline: time.sleep(0.1)
-                if p.poll() is None: p.kill()
-            threading.Thread(target=on_stop, daemon=True).start()
-            finished = False
-            for raw in p.stdout:
-                line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
-                try: finished = json.loads(line).get('type') == 'result'
-                except json.JSONDecodeError: finished = False
-                if finished: p.kill(); break
-            if self.sentinel.exists() and not finished:
+            stream = stack.enter_context(open(ROOT / ('run_' + SET['run'] + '.jsonl'), 'ab'))
+            while not self.sentinel.exists() and (not end or time.time() < end):
+                text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
+                p = subprocess.Popen(argv, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+                LIVE['agent'] = p
+                stack.callback(win32.kill_on_close(p._handle))
+                def on_stop(p=p):
+                    while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
+                    if not self.sentinel.exists(): return
+                    if not HALT.get('reason'): HALT['reason'] = 'stopped'
+                    deadline = time.time() + 60
+                    while p.poll() is None and time.time() < deadline: time.sleep(0.1)
+                    if p.poll() is None: p.kill()
+                threading.Thread(target=on_stop, daemon=True).start()
+                calls = running = 0
+                for raw in p.stdout:
+                    stream.write(raw); stream.flush()
+                    line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
+                    try: event = json.loads(line)
+                    except json.JSONDecodeError: event = None
+                    if event and event.get('type') in ('assistant', 'result') and self.sentinel.exists():
+                        saw = True; p.kill(); break
+                    if event and event.get('type') == 'tool_call' and event.get('subtype') == 'started': running += 1
+                    elif event and event.get('type') == 'tool_call' and event.get('subtype') == 'completed':
+                        running -= 1; calls += 1
+                    if (calls >= limit and running <= 0 and not self.sentinel.exists()) or (end and time.time() >= end):
+                        p.kill(); break
+                p.wait(); flush_thought()
+            if self.sentinel.exists() and not saw:
                 log('report', dict(text=self.story_path.read_text('utf-8') if self.story_path.exists() else ''))
-            flush_thought()
 
 MIND = '''SEEING THE SCREEN IS DONE ONLY WITH --retina AND --jev; ANY OTHER VISUAL ANALYSIS, INCLUDING READING IMAGE FILES, PIXEL-COUNTING SCRIPTS, OR PYTHON ON CAPTURES, IS STRICTLY FORBIDDEN.
 
@@ -839,7 +848,7 @@ WORK IN SHORT LOOPS. Make your first tool call before any long reasoning. Probe,
 
 TIME. {budget} Every tool result carries clock.used, and clock.left when the wake has a budget. At half time, compare the checklist with what is done and shrink what cannot finish. With a fifth left, start nothing new: verify, report, and write the ledger.
 
-MEMORY. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself.
+MEMORY. The STORY below is story.txt. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself. This chat ends after {calls} tool calls and is not resumed. Write story.txt with --story before it ends.
 
 LOOK FIRST. Before you plan, observe the sentence's subject: files and command output for file work; --capture, --retina and --windows for the screen. Trust this wake's observations.
 
@@ -851,7 +860,7 @@ Your score goes up when Retina does the navigating: replan on every wake, feed -
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
-THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
+THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. Each chat is new and is not resumed. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
 
 EVOLVE. You may change your own source. When a tool fails, fix it or grow skills/NAME.py defining NAME(engine, *args) whose docstring starts with $CALL --NAME. Keep the body small.
 
@@ -859,7 +868,7 @@ HONESTY. Report what you observed. Never call something validated, ready or runn
 
 FINISH. Before you grade, ask --jev, judged only on this wake's evidence: "done?Is the sentence met?|pass=Met|block=Not met|hold=Not enough evidence" with "figure@the result the sentence asked for" in the same call. Call it met only on pass. Observe again, grade each deliverable met, partial, or not met with evidence, report output, trajectory, and minutes, then --ledger one lesson.
 
-The ledger and your tools follow.'''
+The story, the ledger and your tools follow.'''
 
 Engine.jev.__doc__ = Engine.jev.__doc__.replace('JEV_USAGE', JEV_USAGE)
 def tools(): return {n: f for n, f in vars(Engine).items() if callable(f) and not n.startswith('_')}
