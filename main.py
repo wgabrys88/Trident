@@ -528,7 +528,7 @@ class Engine:
     def __post_init__(self, fresh):
         self.work.mkdir(parents=True, exist_ok=True); os.chdir(self.work)
         if fresh:
-            for f in (self.story_path, self.ledger_path, self.edit_log, self.goal, self.result, self.sentinel, Path('look.json'), Path('region.txt')): f.unlink(missing_ok=True)
+            for f in (self.story_path, self.edit_log, self.goal, self.result, self.sentinel, Path('look.json'), Path('region.txt')): f.unlink(missing_ok=True)
         for f in (self.story_path, self.ledger_path, self.edit_log, self.goal): f.touch()
         self.result.exists() or write(self.result, {})
         Path('look.json').exists() or write('look.json', None)
@@ -790,7 +790,7 @@ class Engine:
         call = ' '.join([f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"] + [arg if arg.startswith('--') else f"'{arg}'" for arg in forwarded(**{'wake-start': str(start), 'wake-end': str(end or '')})])
         docs = [f.__doc__.replace('$CALL', call) for f in tools().values() if f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
-        return '\n\n'.join((MIND.format(budget=budget, norm=NORM, calls=SET['pass-calls']), 'STORY', self.story_path.read_text('utf-8').strip(), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
+        return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'STORY', self.story_path.read_text('utf-8').strip(), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
@@ -848,7 +848,7 @@ WORK IN SHORT LOOPS. Make your first tool call before any long reasoning. Probe,
 
 TIME. {budget} Every tool result carries clock.used, and clock.left when the wake has a budget. At half time, compare the checklist with what is done and shrink what cannot finish. With a fifth left, start nothing new: verify, report, and write the ledger.
 
-MEMORY. The STORY below is story.txt. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself. This chat ends after {calls} tool calls and is not resumed. Write story.txt with --story before it ends.
+MEMORY. The STORY below is story.txt. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself. Every chat of this wake starts from story.txt; rewrite it with --story whenever the checklist or notes change.
 
 LOOK FIRST. Before you plan, observe the sentence's subject: files and command output for file work; --capture, --retina and --windows for the screen. Trust this wake's observations.
 
@@ -860,7 +860,7 @@ Your score goes up when Retina does the navigating: replan on every wake, feed -
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
-THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. Each chat is new and is not resumed. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
+THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
 
 EVOLVE. You may change your own source. When a tool fails, fix it or grow skills/NAME.py defining NAME(engine, *args) whose docstring starts with $CALL --NAME. Keep the body small.
 
