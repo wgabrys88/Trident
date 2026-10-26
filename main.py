@@ -12,7 +12,7 @@ SCRIPT, ROOT, PYTHON = Path(__file__).resolve(), Path(__file__).resolve().parent
 NVIDIA_HOST = '192.168.16.31'
 SETTINGS = {'vision-url': f'http://{NVIDIA_HOST}:1234', 'vision-model': 'retina', 'fara-width': 1440, 'fara-max-tokens': 2048, 'fara-zoom': 250, 'shot-delay': 1.5,
             'jev-model': 'typesafe/jev-1.14-20261014', 'mind-model': '', 'minutes': '', 'pilot-autoreply': False,
-            'run': time.strftime('%Y%m%d_%H%M%S'), 'wake-start': '', 'wake-end': '', 'retina-pin': '', 'pass-calls': 40}
+            'run': time.strftime('%Y%m%d_%H%M%S'), 'wake-start': '', 'wake-end': '', 'retina-pin': ''}
 OPTIONS = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
 for name, default in SETTINGS.items():
     OPTIONS.add_argument('--' + name, **(dict(action='store_true') if default is False else dict(type=type(default), default=default)))
@@ -22,7 +22,7 @@ DECISION_MODEL = SET['jev-model']
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
 VISION_URL = SET['vision-url']
 VISION_MODEL = SET['vision-model']
-BRAIN = 'grok-4.7-xhigh-fast'
+BRAIN = 'grok-4.7-medium-fast'
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 RUN = ROOT / ('run_' + SET['run'] + '.md')
 NORM, SCREENSHOT_DELAY = 1000, SET['shot-delay']
@@ -40,27 +40,43 @@ WAKE, WAKE_ID = re.compile(r'(?m)^## wake '), SET['run']
 JEV_USAGE = '--jev "NARRATIVE" "QUESTION" ["QUESTION" ...], each QUESTION one of: "name?Claim" (yes/no), "name?Q|true=Yes|false=No", "name?Q|a=Option|b=Option" (choice), "name#Q|Level1|Level2" (score), "name@target in the current capture" (box)'
 CHANGE_APPROACH = 'Keep the goal. This way is not working. Switch to a different strategy and continue.'
 GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
-FARA_IDENTITY = '''You are Fara, a computer-use agent for the Windows desktop. You see one screenshot. Coordinates run from 0 to 1000. The goal names a window: act only on a control you can see in that window. Do not invent controls, text, or windows. If the goal asks what is on screen, terminate and answer from the screenshot. Reply with exactly one action.'''
+FARA_IDENTITY = '''You are Fara, a computer use agent (CUA) specialized for web browsers. You are developed by Microsoft AI Frontiers. You assist users with completing and automating tasks that require the use of a web browser.
 
-FARA_CRITICAL = '''Do not pause to ask the user and do not invent missing details. This is one Windows desktop screenshot. Use the mouse, the keyboard, or terminate.'''
+The model was trained in the timeframe of January - April 2026. You can effectively perform tasks even beyond this range by accessing the web browser and using the latest information on the live web. But your knowledge cutoff is limited to early 2026, so you may not be aware of events or developments that occurred after that time, without explicitly browsing and searching for latest information on the web.
+
+This edition of the model was trained using SFT on top of Qwen3.5-9B, using a synthetic data mixture generated and developed by Microsoft AI Frontiers.'''
+
+FARA_CRITICAL = '''A critical point is a situation where we must pause and request information or confirmation from the user before proceeding. There are three types:
+
+Case 1: Missing User Information — The task requires personal information that the user has not provided (e.g., email, phone number, address, payment details). Never fabricate or assume personal information. Fill in only what the user has explicitly provided, then pause and ask for any missing required fields. (e.g., form requires phone number but user only gave name and email -> fill name and email, then ask for phone number.) If the user has provided all required information, proceed without stopping.
+
+Case 2: Underspecified Task — The task description is ambiguous or missing details needed to make a decision at the current step. Pause and ask for clarification. (e.g., user asks to book a flight but doesn't specify destination -> ask for destination.) If the user's instructions contain all information needed for the current decision, proceed without stopping.
+
+Case 3: Irreversible Action — We are about to perform an action that cannot be undone (e.g., submitting a form, completing a purchase, sending a message, deleting data). If the user explicitly authorized the action (e.g., "submit the form", "complete the purchase", "you have my permission to submit") -> proceed without stopping. If the user did NOT explicitly authorize the action -> stop and ask for confirmation. (e.g., "fill out a form" with no mention of submitting -> fill the form, then ask before submitting; "fill out and submit a form" -> fill and submit without stopping.)
+
+Only stop at a critical point if (1) required information is missing, (2) the task is ambiguous, OR (3) an irreversible action lacks explicit user authorization. If the user has provided all necessary information AND explicitly authorized the action, proceed without interruption.'''
 
 FARA_TOOL = dict(
     name='computer_use',
-    description=f'''Use the mouse and keyboard on the one screenshot you were given.
-* This is one screenshot of a Windows desktop, coordinates 0 to 1000. Reply with one action on one visible control. Do not list items and do not return a bounding box.
-* You will not see a later screenshot in this call. Do not wait. If the goal asks what is on screen, terminate and answer from this screenshot.
+    description=f'''Use a mouse and keyboard to interact with a computer, and take screenshots.
+* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.
+* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots to see the results of your actions. E.g. if you click on Firefox and a window doesn't open, try wait and taking another screenshot.
 * The screen's resolution is {NORM}x{NORM}.
-* The coordinate is the center of the control you can see. Do not invent a control that is not drawn.
-* If the named window is not visible, terminate and say it is not visible.
-* Put the cursor tip in the center of the control. Do not click the edge.''',
+* Whenever you intend to move the cursor to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.
+* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your cursor position so that the tip of the cursor visually falls on the element that you want to click.
+* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don't click boxes on their edges.''',
     parameters=dict(
         properties=dict(
-            action=dict(type='string', description='The action to perform. The available actions are:\n* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order. Includes "Enter", "Alt", "Shift", "Tab", "Control", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Shift", etc.\n* `type`: Type a string of text on the keyboard.\n* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\n* `left_click`: Click the left mouse button.\n* `double_click`: Double-click the left mouse button.\n* `right_click`: Click the right mouse button.\n* `triple_click`: Triple-click the left mouse button (e.g. to select a line of text).\n* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\n* `scroll`: Performs a scroll of the mouse scroll wheel.\n* `hscroll`: Performs a horizontal scroll.\n* `terminate`: Terminate the current task and provide the final answer.', enum=['key','type','mouse_move','left_click','left_click_drag','right_click','double_click','triple_click','scroll','hscroll','terminate']),
+            action=dict(type='string', description='The action to perform. The available actions are:\n* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order. Includes "Enter", "Alt", "Shift", "Tab", "Control", "Backspace", "Delete", "Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Shift", etc.\n* `type`: Type a string of text on the keyboard.\n* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\n* `left_click`: Click the left mouse button.\n* `double_click`: Double-click the left mouse button.\n* `right_click`: Click the right mouse button.\n* `triple_click`: Triple-click the left mouse button (e.g. to select a line of text).\n* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\n* `scroll`: Performs a scroll of the mouse scroll wheel.\n* `hscroll`: Performs a horizontal scroll (mapped to regular scroll).\n* `visit_url`: Visit a specified URL.\n* `history_back`: Go back to the previous page in the browser history.\n* `web_search`: Perform a web search with a specified query.\n* `read_page_answer_question`: Read the current page content and answer a question about it.\n* `pause_and_memorize_fact`: Pause and memorize a fact for future reference.\n* `ask_user_question`: Ask the user a clarifying question and wait for a response.\n* `wait`: Wait specified seconds for the change to happen.\n* `terminate`: Terminate the current task and provide the final answer.', enum=['key','type','mouse_move','left_click','left_click_drag','right_click','double_click','triple_click','scroll','hscroll','visit_url','history_back','web_search','read_page_answer_question','pause_and_memorize_fact','ask_user_question','wait','terminate']),
             keys=dict(type='array', description='Required only by `action=key`.'),
             text=dict(type='string', description='Required only by `action=type`.'),
             coordinate=dict(type='array', description='(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates to move the mouse to. Required by `action=left_click`, `action=double_click`, `action=right_click`, `action=triple_click`, `action=left_click_drag`, and `action=mouse_move`.'),
             pixels=dict(type='number', description='The amount of scrolling to perform. Positive values scroll up, negative values scroll down. Required only by `action=scroll` and `action=hscroll`.'),
-            time=dict(type='number', description='Ignored. This call has one screenshot and does not wait.'),
+            url=dict(type='string', description='The URL to visit. Required only by `action=visit_url`.'),
+            query=dict(type='string', description='The query to search for. Required only by `action=web_search`.'),
+            fact=dict(type='string', description='The fact to remember for the future. Required only by `action=pause_and_memorize_fact`.'),
+            question=dict(type='string', description='The question to ask. Required by `action=read_page_answer_question` and `action=ask_user_question`.'),
+            time=dict(type='number', description='The seconds to wait. Required only by `action=wait`.'),
             answer=dict(type='string', description='The final answer for the task. Required only by `action=terminate`.')
         ),
         required=['action'],
@@ -72,7 +88,7 @@ FARA_ACTIONS = FARA_TOOL['parameters']['properties']['action']['enum']
 CLI_CONFIG = dict(version=1, permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], deny=[]), sandbox=dict(mode='disabled'), approvalMode='unrestricted', autoAcceptWebSearch=True)
 NEXT = 'Here is the next screenshot. Think about what to do next.'
 AUTO_REPLY = "keep going so far as you don't make up information, you have my approval"
-MAX_IMAGES, STEPS = 3, 30
+MAX_IMAGES, STEPS, WAIT_CAP = 3, 30, 30.0
 NO_PAGE = 'This is a Windows desktop, not a web page: {action} cannot read page text here. Look at the screenshot and use the mouse and keyboard.'
 FARA_KEY = {k: k for k in ('ctrl', 'shift', 'alt', 'win', 'enter', 'esc', 'tab', 'backspace', 'del', 'up', 'down', 'left', 'right', 'pageup', 'pagedown', 'space', 'home', 'end', 'insert', *(f'f{i}' for i in range(1, 13)))} | {
     'control': 'ctrl', 'meta': 'win', 'windows': 'win', 'super': 'win', 'cmd': 'win', 'command': 'win', 'option': 'alt', 'return': 'enter', 'escape': 'esc', 'delete': 'del',
@@ -311,8 +327,13 @@ def fara_program(arguments, size=(0, 0)):
         if not amount: return ''
         verb = 'hwheel' if action == 'hscroll' else 'wheel'
         return f'{verb} {amount}' + (f' {point[0]} {point[1]}' if point else '')
-    if action == 'wait': return ''
-    if action in ('visit_url', 'web_search', 'history_back', 'read_page_answer_question'): return ''
+    if action == 'wait': return f"wait {arguments.get('time') or 0}"
+    if action == 'history_back': return 'key alt+left'
+    if action in ('visit_url', 'web_search'):
+        raw = arguments.get('url') if action == 'visit_url' else 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(str(arguments.get('query') or ''))
+        url = str(raw or '')
+        if not url.startswith(('https://', 'http://', 'file://', 'about:')): url = 'https://' + url
+        return 'key ctrl+l\ntype ' + url + '\nkey enter'
     return ''
 def questions(blocks):
     q = {}
@@ -404,9 +425,17 @@ def act(engine, args, size, facts):
         if amount: d.wheel(amount, *at, horizontal=kind == 'hscroll')
         return False, f'I scrolled {"horizontally " if kind == "hscroll" else ""}by {amount} wheel units at {tuple(at)}.', ''
     if kind == 'wait':
-        note = 'This call has one screenshot. wait does not run.'; return False, note, note
-    if kind in ('visit_url', 'web_search', 'history_back', 'read_page_answer_question'):
+        t = min(WAIT_CAP, max(0.0, float(args.get('time', args.get('duration', 3.0)) or 0))); time.sleep(t); return False, f'I waited {t:g}s.', ''
+    if kind in ('visit_url', 'web_search'):
+        raw = str(args.get('url' if kind == 'visit_url' else 'query') or '')
+        url = raw if kind == 'visit_url' and raw.startswith(('https://', 'http://')) else ('https://' + raw if kind == 'visit_url' and ' ' not in raw else 'https://www.bing.com/search?q=' + urllib.parse.quote_plus(raw) + '&FORM=QBLH')
+        os.startfile(url); return False, f'I opened {url} in the default browser.', ''
+    if kind == 'history_back': d.key('alt+left'); return False, 'I pressed alt+left (back).', ''
+    if kind == 'read_page_answer_question':
         note = NO_PAGE.format(action=kind); return False, note, note
+    if kind == 'pause_and_memorize_fact':
+        fact = str(args.get('fact', '')); facts.append(fact); return False, f'I memorized the following fact: {fact}', ''
+    if kind == 'ask_user_question': return True, f"I asked the user: {args.get('question', '')}", ''
     if kind == 'terminate': return True, str(args.get('answer', '')), ''
     raise ValueError(f'unknown action {kind!r}')
 def step_md(n, obs, sent, thoughts, args, point, px, result, info):
@@ -499,7 +528,7 @@ class Engine:
     def __post_init__(self, fresh):
         self.work.mkdir(parents=True, exist_ok=True); os.chdir(self.work)
         if fresh:
-            for f in (self.story_path, self.edit_log, self.goal, self.result, self.sentinel, Path('look.json'), Path('region.txt')): f.unlink(missing_ok=True)
+            for f in (self.story_path, self.ledger_path, self.edit_log, self.goal, self.result, self.sentinel, Path('look.json'), Path('region.txt')): f.unlink(missing_ok=True)
         for f in (self.story_path, self.ledger_path, self.edit_log, self.goal): f.touch()
         self.result.exists() or write(self.result, {})
         Path('look.json').exists() or write('look.json', None)
@@ -735,6 +764,8 @@ class Engine:
             trace['records'].append(record)
             log('pilot', dict(text=step_md(n, obs, image[1:], thoughts, args, point, px, result, info)))
             save()
+            if args.get('action') == 'ask_user_question' and auto:
+                pending, stop = 'USER:' + AUTO_REPLY, False
             if stop:
                 status, answer = args.get('action'), result; break
             time.sleep(SCREENSHOT_DELAY)
@@ -759,13 +790,14 @@ class Engine:
         call = ' '.join([f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"] + [arg if arg.startswith('--') else f"'{arg}'" for arg in forwarded(**{'wake-start': str(start), 'wake-end': str(end or '')})])
         docs = [f.__doc__.replace('$CALL', call) for f in tools().values() if f.__doc__]
         budget = f"The wake has {minutes} minutes and ends at {time.strftime('%H:%M', time.localtime(end))}." if minutes else 'No budget was given here; if the sentence names one, keep it.'
-        return '\n\n'.join((MIND.format(budget=budget, norm=NORM, brain=BRAIN), 'STORY', self.story_path.read_text('utf-8').strip(), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
+        return '\n\n'.join((MIND.format(budget=budget, norm=NORM), 'BRAIN', brain_model(sentence), 'LEDGER', self.ledger_path.read_text('utf-8').strip() or 'This is the first wake.', 'LEARNED', trajectory()['text'], 'TOOLS', *docs, 'SENTENCE', str(sentence)))
     def mind(self, sentence='', minutes=MINUTES):
         start = time.time(); end = start + float(minutes) * 60 if minutes else None
         self.sentinel.unlink(missing_ok=True)
         text(self.work / 'region.txt', 'NONE')
         if str(sentence).strip(): text(self.goal, str(sentence).strip())
         prompt_file = self.work / 'prompt.txt'
+        text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
         vendor = self.work / 'agent'
         profile = vendor / 'config'; profile.mkdir(parents=True, exist_ok=True)
         (vendor / 'data').mkdir(parents=True, exist_ok=True)
@@ -775,49 +807,39 @@ class Engine:
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists())
         boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         argv = [str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '--force', '-p', '--model', brain_model(sentence), '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)]
-        limit, saw = SET['pass-calls'], False
         with ExitStack() as stack:
             stack.callback(self._seal, start, minutes)
-            stream = stack.enter_context(open(ROOT / ('run_' + SET['run'] + '.jsonl'), 'ab'))
-            while not self.sentinel.exists() and (not end or time.time() < end):
-                text(prompt_file, self._mind_prompt(sentence, minutes, start, end))
-                p = subprocess.Popen(argv, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
-                LIVE['agent'] = p
-                stack.callback(win32.kill_on_close(p._handle))
-                def on_stop(p=p):
-                    while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
-                    if not self.sentinel.exists(): return
-                    if not HALT.get('reason'): HALT['reason'] = 'stopped'
-                    deadline = time.time() + 60
-                    while p.poll() is None and time.time() < deadline: time.sleep(0.1)
-                    if p.poll() is None: p.kill()
-                threading.Thread(target=on_stop, daemon=True).start()
-                calls = running = 0
-                for raw in p.stdout:
-                    stream.write(raw); stream.flush()
-                    line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
-                    try: event = json.loads(line)
-                    except json.JSONDecodeError: event = None
-                    if event and event.get('type') in ('assistant', 'result') and self.sentinel.exists():
-                        saw = True; p.kill(); break
-                    if event and event.get('type') == 'tool_call' and event.get('subtype') == 'started': running += 1
-                    elif event and event.get('type') == 'tool_call' and event.get('subtype') == 'completed':
-                        running -= 1; calls += 1
-                    if (calls >= limit and running <= 0 and not self.sentinel.exists()) or (end and time.time() >= end):
-                        p.kill(); break
-                p.wait(); flush_thought()
-            if self.sentinel.exists() and not saw:
+            p = subprocess.Popen(argv, cwd=str(ROOT), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            LIVE['agent'] = p
+            stack.callback(p.wait); stack.callback(p.kill)
+            stack.callback(win32.kill_on_close(p._handle))
+            def on_stop():
+                while p.poll() is None and not self.sentinel.exists(): time.sleep(0.1)
+                if not self.sentinel.exists(): return
+                if not HALT.get('reason'): HALT['reason'] = 'stopped'
+                deadline = time.time() + 60
+                while p.poll() is None and time.time() < deadline: time.sleep(0.1)
+                if p.poll() is None: p.kill()
+            threading.Thread(target=on_stop, daemon=True).start()
+            finished = False
+            for raw in p.stdout:
+                line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
+                try: finished = json.loads(line).get('type') == 'result'
+                except json.JSONDecodeError: finished = False
+                if finished: p.kill(); break
+            if self.sentinel.exists() and not finished:
                 log('report', dict(text=self.story_path.read_text('utf-8') if self.story_path.exists() else ''))
+            flush_thought()
 
 MIND = '''SEEING THE SCREEN IS DONE ONLY WITH --retina AND --jev; ANY OTHER VISUAL ANALYSIS, INCLUDING READING IMAGE FILES, PIXEL-COUNTING SCRIPTS, OR PYTHON ON CAPTURES, IS STRICTLY FORBIDDEN.
 
-You are Trident, a living program. Your body is this directory: main.py holds your tools, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, or edit main.py and win32.py. The body stays those two files. A task script beside them is a mistake. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
+You are Trident, a living program. Your body is this directory: main.py holds your tools, win32.py is your hand, story.txt and ledger.md are your memory. The owner sentence below is the wake. You look, consult Jev, act with the hand, write story.txt, edit your source, or grow a skill and bring it into main.py when it is what you are. Act wherever the sentence requires and report every place outside the body you changed. Call your tools with the commands listed below, exactly as written.
 
 WORK IN SHORT LOOPS. Make your first tool call before any long reasoning. Probe, measure, adjust.
 
 TIME. {budget} Every tool result carries clock.used, and clock.left when the wake has a budget. At half time, compare the checklist with what is done and shrink what cannot finish. With a fifth left, start nothing new: verify, report, and write the ledger.
 
-MEMORY. The STORY below is story.txt. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself. Every chat of this wake starts from story.txt; rewrite it with --story whenever the checklist or notes change.
+MEMORY. The LEDGER below holds earlier lessons, newest last. Do not repeat a failure it names, and start with what it says to do first. --recall digests earlier journals. Never read run_*.md yourself.
 
 LOOK FIRST. Before you plan, observe the sentence's subject: files and command output for file work; --capture, --retina and --windows for the screen. Trust this wake's observations.
 
@@ -825,19 +847,19 @@ CHECKLIST. Split the sentence into numbered deliverables and keep them at the to
 
 EYES. --retina is Fara, the only image-recognition tool. Fara is a computer-use agent: give it one goal that names the window ("In the <window>, click the <target>") and it answers with one action whose coordinate is the target point, 0-{norm} of the capture. It does not list or box: never ask it for an inventory or a bounding box; ask one goal or one short fact per call. It grounds words on any matching text on screen, so name the window and describe the target visually. It can miss a hidden window and can invent items; corroborate with --windows and --jev.
 
-Retina is one action on one named control in one named window. Ask the same goal at most twice, the second time reworded or narrower, then switch approach. Click only when her point sits inside a Jev box for that target. File work stays in files. When the sentence asks for a constructed scene and the application has a Python API, drive that API, then let Retina look at what the person sees.
+Your score goes up when Retina does the navigating: replan on every wake, feed --retina one small concrete step at a time, follow up with a second, narrower question when needed, and act only on what she returns. Ask the same goal at most twice, the second time reworded or narrower; then switch approach.
 
 JEV. --jev is typesafe/jev-1.14 on OpenRouter. Consult him before a decision with two or more ways, before you trust coordinates, when you need a box, and before you claim done. State the ways neutrally. ? is yes/no or a choice, # is a score, @ is a box. Every choice includes change_approach; when he picks it, keep the goal and switch strategy. His numbers are evidence; you choose the act, and if you act against him write why in story.txt.
 
-THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. The default brain is {brain} unless --mind-model is set or the sentence names a grok-4.7 slug.
+THE HAND. --hands acts with the mouse and keyboard on 0-{norm} points of the region. Capture after you act and look before the next act. A new wake spawns a new agent and does not resume a chat. The default brain is grok-4.7-medium-fast unless --mind-model is set or the sentence names a grok-4.7 slug.
 
-EVOLVE. You may change your own source. The body stays two files, main.py and win32.py. When a tool fails, fix it in those files. A task script beside them is a mistake. A file in skills/ is allowed only when it defines NAME(engine, *args) and its docstring starts with $CALL --NAME. Keep the body small. Do not put a task, a model nickname, or a desktop layout into the source.
+EVOLVE. You may change your own source. When a tool fails, fix it or grow skills/NAME.py defining NAME(engine, *args) whose docstring starts with $CALL --NAME. Keep the body small.
 
 HONESTY. Report what you observed. Never call something validated, ready or running without evidence of this wake. When you change something outside the body, say so in story.txt and in the final report.
 
 FINISH. Before you grade, ask --jev, judged only on this wake's evidence: "done?Is the sentence met?|pass=Met|block=Not met|hold=Not enough evidence" with "figure@the result the sentence asked for" in the same call. Call it met only on pass. Observe again, grade each deliverable met, partial, or not met with evidence, report output, trajectory, and minutes, then --ledger one lesson.
 
-The story, the ledger and your tools follow.'''
+The ledger and your tools follow.'''
 
 Engine.jev.__doc__ = Engine.jev.__doc__.replace('JEV_USAGE', JEV_USAGE)
 def tools(): return {n: f for n, f in vars(Engine).items() if callable(f) and not n.startswith('_')}

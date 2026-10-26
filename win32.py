@@ -7,7 +7,7 @@ MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001
 KEYUP, EXTENDED = 0x0002, 0x0001
 SETTLE, DOUBLE_GAP, TYPE_DOWN, TYPE_GAP, HOTKEY_GAP, SCROLL_GAP, DRAG_GAP, DRAG_STEPS = 0.03, 0.05, 0.01, 0.02, 0.02, 0.03, 0.016, 25
 WM_DESTROY, WM_PAINT, WM_CLOSE, WM_ERASEBKGND, WM_KEYDOWN, WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN = 0x0002, 0x000F, 0x0010, 0x0014, 0x0100, 0x0200, 0x0201, 0x0202, 0x0204
-EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E, 0x5B, 0x5C))
+EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {
     'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B,
     'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D,
@@ -315,11 +315,9 @@ def hotkey(keys):
         if name in VK: codes.append(VK[name])
         elif len(name) == 1: codes.append(scan(name) & 0xFF)
         else: raise SystemExit(f'unknown hotkey component: {name}')
-    gap = 0.12 if ('win' in names or 'windows' in names) else HOTKEY_GAP
     for vk in codes:
         key(vk)
-        time.sleep(gap)
-    time.sleep(gap)
+        time.sleep(HOTKEY_GAP)
     for vk in reversed(codes):
         key(vk, True)
         time.sleep(HOTKEY_GAP)
