@@ -4,3 +4,6 @@
 !/.gitignore
 !/skills/
 !/skills/*.py
+!/v2/
+!/v2/**
+!/v2/**/
