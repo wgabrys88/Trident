@@ -1,10 +1,7 @@
 *
-!/main.py
-!/win32.py
 !/.gitignore
+!/*.py
 !/skills/
-!/skills/*.py
-!/v2/
-!/v2/**
-!/v2/**/
-v2/__pycache__/
+!/skills/**
+__pycache__/
+*.pyc

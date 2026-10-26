@@ -69,7 +69,7 @@ def log(kind, text=''):
         return
     if os.environ.get('TRIDENT_JOURNAL') != '1':
         try:
-            (CODE.parent / 'journal.path').write_text(str(RUN), encoding='utf-8')
+            (CODE / 'journal.path').write_text(str(RUN), encoding='utf-8')
             ensure_journal()
         except OSError:
             pass
@@ -109,7 +109,7 @@ def serve_journal():
             self.wfile.flush()
 
         def _target(self):
-            pointer = CODE.parent / 'journal.path'
+            pointer = CODE / 'journal.path'
             if pointer.exists():
                 name = pointer.read_text(encoding='utf-8').strip()
                 if name:

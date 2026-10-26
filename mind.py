@@ -7,9 +7,9 @@ from memory import current_lesson, enter, learn
 CHAT_CALLS = 12
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 DEFAULT = 'grok-4.7-medium-fast'
-MIND = '''You are Trident. Your code is the v2 directory. Your memory is story.txt and ledger.md in the work directory. The sentence at the bottom is the wake.
+MIND = '''You are Trident. Your code and your memory are this directory. main.py is the entry point, the other modules are your body, and story.txt and ledger.md are your memory. The sentence at the bottom is the wake.
 
-Look, decide, act, write the story, or edit v2 and add a skill. The next command runs the code as it is on disk.
+Look, decide, act, write the story, or edit this directory and add a skill. The next command runs the code as it is on disk.
 
 Call the tools with the commands in the tool list. Multiline text goes in a file. The command receives the path.
 
@@ -72,7 +72,7 @@ def spawn(app, model, prompt_path):
     profile = vendor / 'config'
     profile.mkdir(parents=True, exist_ok=True)
     (vendor / 'data').mkdir(parents=True, exist_ok=True)
-    temp = CODE.parent.parent / 'temp'
+    temp = CODE.parent / 'temp'
     temp.mkdir(exist_ok=True)
     config = dict(version=1, permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], deny=[]), sandbox=dict(mode='disabled'), approvalMode='unrestricted', autoAcceptWebSearch=True)
     (profile / 'cli-config.json').write_text(json.dumps(config), encoding='utf-8')

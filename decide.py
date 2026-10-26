@@ -112,7 +112,7 @@ A choice contains only the options in the file.'''
                 return dict(blank=True, capture=screen.get('id'))
             image, scale_x, scale_y = pad(unpng_screen(screen))
             state.append(dict(type='image_url', image_url=dict(url='data:image/png;base64,' + __import__('base64').b64encode(png(image)).decode())))
-        token = (Path(__file__).resolve().parents[2] / '.env').read_text(encoding='utf-8-sig').strip().strip('"\'')
+        token = (Path(__file__).resolve().parents[1] / '.env').read_text(encoding='utf-8-sig').strip().strip('"\'')
         request = urllib.request.Request(URL, json.dumps(dict(model=SET['decide_model'], state=state, questions=questions)).encode(), {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
         with urllib.request.urlopen(request, timeout=60) as response:
             body = json.load(response)
