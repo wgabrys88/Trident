@@ -19,16 +19,14 @@ MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001
 KEYUP, EXTENDED = 0x0002, 0x0001
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
-MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt and ledger.md are memory. The run markdown is the record. The sentence at the bottom is the only assignment.
-See the desktop through the eye, one request at a time. Name the window and the target. Ask whether it is visible before a click. Copy a returned fara id unchanged. Do not invent a point. After a hand, ask what changed.
+MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
+On every chat, including after 42 tool calls, read FARA and replan. Mid-subtask, pass one adjustment sentence. After terminated, pass the next subtask sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
 This chat rotates after 42 completed tool calls. After 35, write the story and replace this wake's ledger lesson, then continue. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
 On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
 DOCS = (
-'--eye-file PATH. One eye request. An observation returns text. An action returns one line: fara ACTION_ID.',
-'--hands-file PATH. Exactly one copied line, fara ACTION_ID. The body rechecks the target, waits, and captures again.',
+'--eye-file PATH. The current subtask sentence. Fara runs until she terminates or 8 actions. The result is her log: thoughts, actions, and coordinates.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
 '--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
-'--capture. Write shots/<id>.png and screen.json. Read the picture with the eye.',
 '--windows. List titled windows. A minimized window has box null.',
 '--region NONE or LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen.',
 '--place HWND LEFT TOP RIGHT BOTTOM. Move a window only when the sentence asks.',
@@ -191,14 +189,14 @@ def brief_result(kind, body):
     if kind in ('capture', 'hands'):
         return f"id={body.get('id')} size={body.get('size')} cursor={body.get('cursor')}"
     if kind == 'eye':
-        return f"action={body.get('action')} program={body.get('program')} answer={body.get('answer')}"
+        return body.get('log') or f"action={body.get('action')} coordinate={body.get('coordinate')} program={body.get('program')} answer={body.get('answer')}"
     if kind == 'map':
         return f"organism_lines={body.get('organism_lines')} total_python_lines={body.get('total_python_lines')} under_1000={body.get('under_1000')} vision={body.get('vision')}"
     return json.dumps({key: value for key, value in body.items() if key != 'clock'}, ensure_ascii=False)
 def emit(kind, payload):
     body = dict(payload)
     body.update(clock())
-    limit = 2000 if kind == 'windows' else 500
+    limit = 2000 if kind in ('windows', 'eye') else 500
     line = clip(brief_result(kind, body), limit)
     heading(kind, line, limit)
     print(line, flush=True)
@@ -207,34 +205,24 @@ def serve_journal():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     page = b'<!DOCTYPE html><meta charset=utf-8><title>trident</title><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font:14px monospace"></pre><script>var t=document.getElementById("t"),es=new EventSource("/events");function z(){scrollTo(0,1e9)}es.addEventListener("reset",function(e){t.textContent=e.data;z()});es.addEventListener("more",function(e){t.textContent+=e.data;z()})</script>'
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_):
-            return
+        def log_message(self, *_): return
         def _send(self, code, ctype, body=b'', stream=False):
-            self.send_response(code)
-            self.send_header('Content-Type', ctype)
-            self.send_header('Cache-Control', 'no-store')
-            self.end_headers()
-            if body and not stream:
-                self.wfile.write(body)
+            self.send_response(code); self.send_header('Content-Type', ctype); self.send_header('Cache-Control', 'no-store'); self.end_headers()
+            if body and not stream: self.wfile.write(body)
         def _event(self, name, payload):
-            lines = payload.decode('utf-8', 'replace').split('\n')
-            self.wfile.write(('event: ' + name + '\n' + ''.join(f'data: {line}\n' for line in lines) + '\n').encode())
-            self.wfile.flush()
+            self.wfile.write(('event: ' + name + '\n' + ''.join(f'data: {line}\n' for line in payload.decode('utf-8', 'replace').split('\n')) + '\n').encode()); self.wfile.flush()
         def _target(self):
             pointer = CODE / 'journal.path'
-            if pointer.exists() and pointer.read_text(encoding='utf-8').strip():
-                return Path(pointer.read_text(encoding='utf-8').strip())
-            return RUN
+            text = pointer.read_text(encoding='utf-8').strip() if pointer.exists() else ''
+            return Path(text) if text else RUN
         def do_GET(self):
             path = self.path.split('?', 1)[0]
             if path == '/identity':
                 self._send(200, 'application/json', json.dumps({'service': 'trident-journal', 'code': str(CODE)}).encode())
-                return
-            target = self._target()
-            if path == '/md':
+            elif path == '/md':
+                target = self._target()
                 self._send(200, 'text/plain; charset=utf-8', target.read_bytes() if target and target.exists() else b'')
-                return
-            if path == '/events':
+            elif path == '/events':
                 self._send(200, 'text/event-stream; charset=utf-8', stream=True)
                 seen = current = None
                 try:
@@ -243,18 +231,16 @@ def serve_journal():
                         data = target.read_bytes() if target and target.exists() else b''
                         key = str(target)
                         if key != current or seen is None or len(data) < seen:
-                            current, seen = key, len(data)
-                            self._event('reset', data)
+                            current, seen = key, len(data); self._event('reset', data)
                         elif len(data) > seen:
-                            self._event('more', data[seen:])
-                            seen = len(data)
+                            self._event('more', data[seen:]); seen = len(data)
                         time.sleep(0.4)
                 except OSError:
                     return
-            if path in ('/', '/index.html'):
+            elif path in ('/', '/index.html'):
                 self._send(200, 'text/html; charset=utf-8', page)
-                return
-            self.send_error(404)
+            else:
+                self.send_error(404)
     ThreadingHTTPServer.allow_reuse_address = True
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
 def screen_size():
@@ -289,8 +275,7 @@ class Desk:
         self.work = Path(work)
     def region(self):
         path = self.work / 'region.txt'
-        raw = path.read_text(encoding='utf-8').strip() if path.exists() else 'NONE'
-        return raw or 'NONE'
+        return (path.read_text(encoding='utf-8').strip() if path.exists() else 'NONE') or 'NONE'
     def _box(self):
         if getattr(self, 'action_box', None) is not None:
             return tuple(self.action_box)
@@ -302,12 +287,10 @@ class Desk:
         return x1 + round(max(0, min(NORM, float(x))) * (x2 - x1 - 1) / NORM), y1 + round(max(0, min(NORM, float(y))) * (y2 - y1 - 1) / NORM)
     def cursor_pixel(self):
         at = W.POINT()
-        if not user32.GetCursorPos(ctypes.byref(at)):
-            raise Fail('cannot read the cursor')
+        if not user32.GetCursorPos(ctypes.byref(at)): raise Fail('cannot read the cursor')
         return [at.x, at.y]
     def move(self, x, y):
-        send(MOVE, *self.point(x, y), absolute=True)
-        time.sleep(0.03)
+        send(MOVE, *self.point(x, y), absolute=True); time.sleep(0.03)
     def click(self, x, y, right=False, times=1):
         px, py = self.point(x, y)
         send(MOVE, px, py, absolute=True)
@@ -337,8 +320,7 @@ class Desk:
         finally:
             send(LEFT_UP)
     def wheel(self, amount, horizontal=False):
-        if amount:
-            send(HWHEEL if horizontal else WHEEL, data=int(amount))
+        if amount: send(HWHEEL if horizontal else WHEEL, data=int(amount))
     def _key(self, vk, up=False):
         packet = Input()
         packet.type = 1
@@ -463,8 +445,7 @@ class Desk:
             raise Fail('the wake could not open a job')
         return job
     def close_job(self, job):
-        if job:
-            kernel32.CloseHandle(job)
+        if job: kernel32.CloseHandle(job)
 def fit_size(width, height):
     if min(width, height) <= 0 or max(width, height) / min(width, height) > 200:
         raise Fail('the capture has a bad shape')
@@ -473,7 +454,7 @@ def fit_size(width, height):
 def system_text(width, height):
     units = '0-1000 on each axis' if SET.get('coordinate_mode', 'normalized') == 'normalized' else 'pixels of the sent bitmap'
     schema = {'name': 'computer_use', 'description': f'One desktop action. Coordinates are {units}. Bitmap is {width}x{height}. Aim at the center of the named target.', 'parameters': {'type': 'object', 'required': ['action'], 'properties': {'action': {'type': 'string', 'enum': list(ACTIONS)}, 'coordinate': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}, 'keys': {'type': 'array', 'items': {'type': 'string'}}, 'text': {'type': 'string'}, 'pixels': {'type': 'number'}, 'time': {'type': 'number'}, 'answer': {'type': 'string'}}}}
-    return 'You are the eye. One screenshot, one computer_use call. If the named target is not visible, terminate and name what is missing. A question terminates with the observation.\n<tools>\n' + json.dumps(schema) + '\n</tools>\n<tool_call>\n{"name": "computer_use", "arguments": {"action": "terminate", "answer": "what you see"}}\n</tool_call>'
+    return 'You are the eye. One screenshot, one computer_use call. If the named target is not visible, terminate and name what is missing. A question terminates with the observation. When the subtask is done, terminate and put the observation in answer.\n<tools>\n' + json.dumps(schema) + '\n</tools>\n<tool_call>\n{"name": "computer_use", "arguments": {"action": "left_click", "coordinate": [500, 400]}}\n</tool_call>'
 def validate(arguments, width=1000, height=1000):
     action = arguments.get('action')
     if action not in ACTIONS:
@@ -501,14 +482,7 @@ def parse_call(raw, width=1000, height=1000):
     if len(matches) != 1:
         raise Fail('the eye must return exactly one computer_use call')
     try:
-        def unique(pairs):
-            out = {}
-            for key, value in pairs:
-                if key in out:
-                    raise ValueError('duplicate')
-                out[key] = value
-            return out
-        call = json.loads(matches[0][1], object_pairs_hook=unique)
+        call = json.loads(matches[0][1], object_pairs_hook=lambda pairs: dict(pairs) if len(pairs) == len({key for key, _ in pairs}) else (_ for _ in ()).throw(ValueError('duplicate')))
     except ValueError as error:
         raise Fail('the eye returned invalid JSON') from error
     if not isinstance(call, dict) or call.get('name') != 'computer_use' or not isinstance(call.get('arguments'), dict):
@@ -526,18 +500,28 @@ def load_capture(work):
         if list(image[1:]) != screen.get('size') or (screen.get('sha256') and screen['sha256'] != digest):
             raise Fail('capture does not match its metadata')
         return screen | {'sha256': digest}, image
-def ask(app, image, goal, screen):
+def ask(app, image, screen, turns):
     width, height = fit_size(*image[1:])
-    fitted = image if image[1:] == (width, height) else app.desk.stretch(image, (0, 0, image[1], image[2]), width, height)
-    payload = {'model': SET['vision_model'], 'temperature': 0, 'max_tokens': 800, 'chat_template_kwargs': {'enable_thinking': False}, 'messages': [{'role': 'system', 'content': system_text(width, height)}, {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png(fitted)).decode()}}, {'type': 'text', 'text': goal}]}]}
+    kept = [turn for turn in turns if turn.get('shot')][-3:]
+    messages = [{'role': 'system', 'content': system_text(width, height)}]
+    for turn in turns:
+        if turn['role'] == 'assistant':
+            messages.append({'role': 'assistant', 'content': turn.get('text') or ''}); continue
+        raw = image if turn.get('shot') == screen.get('id') else (unpng((app.work / 'shots' / (turn['shot'] + '.png')).read_bytes()) if turn in kept else None)
+        fit = None if raw is None else raw if raw[1:] == (width, height) else app.desk.stretch(raw, (0, 0, raw[1], raw[2]), width, height)
+        bits = [] if fit is None else [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png(fit)).decode()}}]
+        messages.append({'role': 'user', 'content': bits + [{'type': 'text', 'text': turn.get('text') or ''}]})
+    payload = {'model': SET['vision_model'], 'temperature': 0, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False}, 'messages': messages}
     request = urllib.request.Request(SET['vision_url'] + '/v1/chat/completions', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=180) as response:
         body = json.load(response)
     content = (body['choices'][0]['message'].get('content') or '').strip()
-    if not content:
-        raise Fail('the eye returned no content')
+    if not content: raise Fail('the eye returned no content')
     mode = SET.get('coordinate_mode', 'normalized')
-    arguments = parse_call(content, *((width - 1, height - 1) if mode == 'pixels' else (NORM, NORM)))
+    try:
+        arguments = parse_call(content, *((width - 1, height - 1) if mode == 'pixels' else (NORM, NORM)))
+    except Fail as error:
+        error.raw = content; raise
     point = arguments.get('coordinate')
     if point is not None and mode == 'pixels':
         point = [point[0] * NORM / max(1, width - 1), point[1] * NORM / max(1, height - 1)]
@@ -545,7 +529,7 @@ def ask(app, image, goal, screen):
     if arguments['action'] in ('scroll', 'hscroll'):
         axis = 0 if arguments['action'] == 'hscroll' else 1
         scroll = arguments['pixels'] * image[axis + 1] / (NORM if mode == 'normalized' else (width, height)[axis])
-    return {'goal': goal, 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None}
+    return {'goal': turns[-1].get('text'), 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None, 'thought': content.split('<tool_call>', 1)[0].strip(), 'raw': content}
 def point_pixel(point, size):
     return [round(value * (length - 1) / NORM) for value, length in zip(point, size)]
 def patch_of(image, point):
@@ -626,36 +610,55 @@ def execute(desk, action_id):
         finally:
             if hasattr(desk, 'action_box'):
                 del desk.action_box
+def eye_log(data):
+    rows = [f"action={t.get('action')} coordinate={t.get('coordinate')} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
+    return ('open' if data.get('open') else 'terminated') + '\n' + '\n'.join(rows[-12:])
 def eye_run(app, path, dry=False):
     text = read_file(path).strip()
-    if not text:
-        raise Fail('the eye file is empty')
-    screen, image = load_capture(app.work)
-    if screen.get('blank'):
-        return {'blank': True, 'capture': screen['id'], 'program': None}
-    seen = ask(app, image, text, screen)
-    if seen['action'] != 'terminate':
-        seen.update(store_action(app, screen, image, seen))
-    return seen
-def hands_run(app, path, dry=False):
-    src = read_file(path).strip()
-    parts = src.split()
-    if len(src.splitlines()) != 1 or len(parts) != 2 or parts[0] != 'fara':
-        raise Fail('the hand file must be exactly: fara ACTION_ID')
-    execute(app.desk, parts[1])
-    time.sleep(float(SET.get('shot_delay') or 1.5))
-    return app.desk.capture()
-def windows_run(app, _arg, dry=False):
-    return {'windows': app.desk.windows()}
-def capture_run(app, _arg, dry=False):
-    return {'dry': True} if dry else app.desk.capture()
+    if not text: raise Fail('the eye file is empty')
+    if dry: return {'log': 'dry'}
+    file = app.work / 'fara_traj.json'
+    data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
+    data = data if data.get('open') else {'open': True, 'turns': []}
+    def put(role, **fields):
+        data['turns'].append({'role': role, **fields}); json_file(file, data)
+    put('user', text=text)
+    for _ in range(8):
+        if (app.work / 'stop').exists() or (SET.get('wake_end') and time.time() >= float(SET['wake_end'])): break
+        last = data['turns'][-1]
+        if last.get('role') != 'user' or not last.get('shot'):
+            shot = app.desk.capture()
+            if shot.get('blank'):
+                put('user', text='blank capture', shot=shot.get('id')); break
+            last.update(shot=shot['id']) if last.get('role') == 'user' else data['turns'].append({'role': 'user', 'text': 'observe', 'shot': shot['id']})
+            json_file(file, data)
+        screen, image = load_capture(app.work)
+        try: seen = ask(app, image, screen, data['turns'])
+        except Fail as error:
+            raw = clip(getattr(error, 'raw', None) or str(error), 400)
+            put('assistant', text=raw, action='unparsed', coordinate=None, answer=raw, thought=raw)
+            heading('eye', 'action=unparsed coordinate= answer=' + raw, 2000); break
+        raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), clip(seen.get('thought') or '', 160)
+        heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}", 2000)
+        put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, answer=seen.get('answer') or '')
+        if seen['action'] == 'terminate':
+            data['open'] = False; json_file(file, data); break
+        try:
+            seen['goal'] = text
+            execute(app.desk, store_action(app, screen, image, seen)['program'].split()[-1])
+            time.sleep(float(SET.get('shot_delay') or 1.5))
+            put('user', text=f"Done. action={seen['action']} coordinate={coord}")
+        except Fail as error:
+            halted = 'stopped' in str(error) or 'deadline' in str(error)
+            put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
+            if halted: break
+    return {'log': eye_log(data)}
+def windows_run(app, _arg, dry=False): return {'windows': app.desk.windows()}
 def region_run(app, value, dry=False):
     value = str(value or 'NONE').strip()
-    if value != 'NONE':
-        parts = value.split(',')
-        nums = list(map(int, parts)) if len(parts) == 4 else []
-        if not (len(nums) == 4 and 0 <= nums[0] < nums[2] <= 1000 and 0 <= nums[1] < nums[3] <= 1000):
-            raise Fail('region is NONE or left,top,right,bottom on 0-1000')
+    nums = [int(part) for part in value.split(',')] if value.count(',') == 3 else []
+    if value != 'NONE' and not (len(nums) == 4 and 0 <= nums[0] < nums[2] <= 1000 and 0 <= nums[1] < nums[3] <= 1000):
+        raise Fail('region is NONE or left,top,right,bottom on 0-1000')
     with locked(app.work / 'capture.lock'):
         atomic(app.work / 'region.txt', value)
     return {'region': value}
@@ -757,7 +760,7 @@ def brain(sentence):
     if SET.get('mind_model'):
         return SET['mind_model']
     said = str(sentence).lower()
-    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh-fast')
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-medium-fast')
 def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
     current, earlier = journals(app.work, SET['run'])
@@ -765,7 +768,8 @@ def render_prompt(app, sentence, minutes, end):
     budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 20 percent remaining, stop new work, write the story and one ledger lesson, and stop.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
-    return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
+    fara = eye_log(json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {'open': False, 'turns': []})
+    return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'FARA', fara, 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
 def text_of(message):
     content = (message or {}).get('content') if isinstance(message, dict) else message
     if isinstance(content, list):
@@ -780,7 +784,7 @@ def spawn(app, model, prompt_path, job_name):
     (vendor / 'data').mkdir(parents=True, exist_ok=True)
     temp = CODE.parent / 'temp'
     temp.mkdir(exist_ok=True)
-    (profile / 'cli-config.json').write_text(json.dumps({'version': 1, 'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': []}, 'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True}), encoding='utf-8')
+    (profile / 'cli-config.json').write_text(json.dumps({'version': 1, 'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': ['Read(shots/**)', 'Read(**/*.png)']}, 'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True}), encoding='utf-8')
     versions = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions'
     folders = [path for path in versions.iterdir() if path.name[:1].isdigit() and (path / 'index.js').exists()] if versions.exists() else []
     if not folders:
@@ -810,10 +814,8 @@ def read_agent(proc, app, end):
             inbox.put(None)
     threading.Thread(target=pump, daemon=True).start()
     def finish(why):
-        if thought:
-            heading('think', f'chars={thought}')
-        if proc.poll() is None:
-            proc.kill()
+        if thought: heading('think', f'chars={thought}')
+        if proc.poll() is None: proc.kill()
         return why, last
     while True:
         now = time.time()
@@ -847,11 +849,9 @@ def read_agent(proc, app, end):
             continue
         kind, sub = item.get('type'), item.get('subtype')
         if kind == 'thinking' and sub == 'delta':
-            thought += len(item.get('text') or '')
-            continue
+            thought += len(item.get('text') or ''); continue
         if thought:
-            heading('think', f'chars={thought}')
-            thought = 0
+            heading('think', f'chars={thought}'); thought = 0
         if kind == 'assistant' and text_of(item.get('message')):
             last = text_of(item.get('message'))
             heading('say', last, 120)
@@ -881,6 +881,16 @@ def drive(app, sentence, minutes):
     if sentence:
         atomic(app.work / 'goal.txt', sentence)
     outcome, said, proc, job, previous, chat_index = 'failed', '', None, None, os.environ.get('TRIDENT_CHAT_ID'), 0
+    mirror = threading.Event()
+    def follow(seen=0):
+        while True:
+            try: data = RUN.read_bytes() if RUN.exists() else b''
+            except OSError: data = b''
+            chunk = data if len(data) < seen else data[seen:]
+            if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); seen = len(data)
+            if mirror.is_set(): return
+            mirror.wait(0.4)
+    threading.Thread(target=follow, daemon=True).start()
     try:
         heading('wake', f'minutes={minutes or ""}')
         while not (end and time.time() >= end) and not (app.work / 'stop').exists():
@@ -908,33 +918,28 @@ def drive(app, sentence, minutes):
                 if proc.stdout:
                     proc.stdout.close()
                 proc = None
-            if outcome != 'rotate':
-                break
+            if outcome != 'rotate': break
         else:
             outcome = 'deadline' if end and time.time() >= end else 'stopped'
         if said:
             heading('report', said, 400)
         return {'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}
     finally:
-        app.desk.close_job(job)
+        mirror.set(); app.desk.close_job(job)
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
         enter(app.work, current_lesson(app.work), outcome)
-        if previous is None:
-            os.environ.pop('TRIDENT_CHAT_ID', None)
-        else:
-            os.environ['TRIDENT_CHAT_ID'] = previous
+        if previous is None: os.environ.pop('TRIDENT_CHAT_ID', None)
+        else: os.environ['TRIDENT_CHAT_ID'] = previous
 def mind_run(app, path, dry=False):
     sentence = read_file(path).strip()
     minutes = float(SET['minutes']) if SET.get('minutes') else None
     return drive(app, sentence, minutes)
 TOOLS = (
-    ('eye', 'eye_file', eye_run, 'text'), ('hands', 'hands_file', hands_run, 'text'),
-    ('story', 'story_file', story_run, 'text'), ('ledger', 'ledger_file', ledger_run, 'text'), ('capture', 'capture', capture_run, 'bool'),
+    ('eye', 'eye_file', eye_run, 'text'), ('story', 'story_file', story_run, 'text'), ('ledger', 'ledger_file', ledger_run, 'text'),
     ('windows', 'windows', windows_run, 'bool'), ('region', 'region', region_run, 'text'), ('place', 'place', place_run, 'place'),
-    ('learn', 'learn', learn_run, 'bool'), ('stop', 'stop', stop_run, 'bool'),
-    ('mind', 'mind_file', mind_run, 'text'), ('map', 'map', map_run, 'bool'),
+    ('learn', 'learn', learn_run, 'bool'), ('stop', 'stop', stop_run, 'bool'), ('mind', 'mind_file', mind_run, 'text'), ('map', 'map', map_run, 'bool'),
 )
 class App:
     def __init__(self, work):
@@ -970,7 +975,6 @@ def main(argv=None):
     name, fn, value = picks[0]
     if (app.work / 'stop').exists() and name in BLOCKED:
         raise Fail('stopped')
-    started = time.time()
     try:
         result = fn(app, value, args.dry)
     except Exception as error:
