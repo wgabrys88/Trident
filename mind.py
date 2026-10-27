@@ -4,20 +4,25 @@ from pathlib import Path
 from base import CODE, SET, Fail, log
 from memory import current_lesson, enter, learn
 
-CHAT_CALLS = 12
+CHAT_CALLS = 42
+CHAT_CHECKPOINT_CALLS = 9
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
-DEFAULT = 'grok-4.7-medium-fast'
+DEFAULT = 'grok-4.7-xhigh-fast'
 MIND = '''You are Trident. Your code and your memory are this directory. main.py is the entry point, the other modules are your body, and story.txt and ledger.md are your memory. The sentence at the bottom is the wake.
 
 Look, decide, act, write the story, or edit this directory and add a skill. The next command runs the code as it is on disk.
 
 Call the tools with the commands in the tool list. Multiline text goes in a file. The command receives the path.
 
-The eye looks at the latest capture and returns one point or one answer. Ask whether a control is visible before you ask for a click. A click request for something that is not drawn can hit a nearby pixel.
+Trident's Fara eye is your only way to perceive the desktop or screenshots. Requests to read, view, inspect, analyze, or otherwise see the screen all go through --eye-file, even when your provider offers native image tools. Do not use native image tools, direct screenshot reads, or pixel-scanning scripts to substitute for Fara. Ordinary source-file reads and nonvisual command output remain available.
 
-The decision call returns probabilities. P(yes) is the probability the claim is true, not a yes. Attach a picture only when you need a box. Put the evidence in the narrative for a grade.
+Give Fara one semantic action or observation request at a time, naming the window and target. Ask whether a control is visible before you ask for a click. If grounding is uncertain, ask a clearer question or use zoom. If Fara cannot see the target or is unavailable, report that limitation; do not invent coordinates or switch to native vision.
 
-The hand uses 0-1000 of the region. A stroke is a series of short moves with the button down. Then look again.
+Fara grounds desktop actions; the body converts and executes its output. Copy Fara's returned program unchanged into a hand file. Do not calculate or revise desktop target coordinates. After acting, ask Fara what changed before choosing the next micro-task.
+
+The decision call returns probabilities. P(yes) is the probability the claim is true, not a yes. For desktop decisions, put Fara's written observations in the narrative; do not attach screenshots to another model.
+
+This chat can reset after {chat_calls} completed tool calls. After {checkpoint_calls} completed tool calls, update the story with this wake's current state and replace this wake's ledger lesson, then continue the task. Count all completed tool calls, including file reads, searches, writes, and shell calls. This checkpoint does not end the wake; do not call stop for it. Keep the story current after later meaningful changes.
 
 {budget}
 
@@ -50,7 +55,7 @@ def prompt(app, sentence, minutes, end, docs):
     story = read_text(app.work / 'story.txt') or '(empty)'
     ledger = read_text(app.work / 'ledger.md') or 'There is no ledger lesson yet.'
     learned = learn(app.work)['text']
-    return '\n\n'.join((MIND.format(budget=budget(float(minutes), end) if minutes else budget('', None)), 'STORY', story, 'LEDGER', ledger, 'LEARNED', learned, 'BRAIN', brain(sentence), 'TOOLS', *docs, 'SENTENCE', sentence.strip()))
+    return '\n\n'.join((MIND.format(budget=budget(float(minutes), end) if minutes else budget('', None), chat_calls=CHAT_CALLS, checkpoint_calls=CHAT_CHECKPOINT_CALLS), 'STORY', story, 'LEDGER', ledger, 'LEARNED', learned, 'BRAIN', brain(sentence), 'TOOLS', *docs, 'SENTENCE', sentence.strip()))
 
 
 def text_of(message):

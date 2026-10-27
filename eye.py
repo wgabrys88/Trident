@@ -96,10 +96,10 @@ def program(action, point, arguments):
 class Eye:
     name, flag = 'eye', 'eye_file'
     doc = '''$CALL --eye-file PATH
-Reads the whole goal from the file and looks at the latest capture. It returns one point, on a 0-1000 scale of the capture, or one answer.
+Fara reads the whole semantic goal from the file and looks at the latest capture. This is the only desktop-perception tool, including requests to read, view, inspect, or analyze the screen. It returns one proposed action or one answer, with a hand program when supported.
 A first line that is exactly zoom asks again on a crop around the first point.
 Ask whether a control is visible before you ask for a click. A click request for something that is not drawn can hit a nearby pixel.
-A fact comes back as action terminate and an answer. The point is yours to run, change, or ignore.'''
+A fact comes back as action terminate and an answer. Copy a returned action program unchanged into a hand file; do not calculate or revise its coordinates. If an action has no executable program, report the limitation rather than constructing coordinates. If grounding is uncertain, ask a clearer question or use zoom. If Fara cannot see the target or is unavailable, report the limitation; do not substitute native image tools, screenshot reads, or pixel scans.'''
 
     def run(self, app, path, dry=False):
         text = read_goal(path)

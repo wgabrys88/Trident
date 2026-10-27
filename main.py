@@ -12,7 +12,7 @@ from mind import mind
 class Capture:
     name, flag = 'capture', 'capture'
     doc = '''$CALL --capture
-Takes a capture of the region and writes shots/<id>.png and screen.json. The eye and a box question read the latest capture.'''
+Takes a capture of the region and writes shots/<id>.png and screen.json. Use Trident's Fara eye to perceive the capture; do not open it with native image tools.'''
 
     def run(self, app, _arg, dry=False):
         if dry:

@@ -56,8 +56,8 @@ def main():
         (work / 'story.txt').write_text('CHECKLIST\n1. A cat.\n', encoding='utf-8')
         proc = run(work, '--run', 'mind', '--minutes', '40', '--dry', '--mind-file', str(sentence))
         prompt = json.loads(proc.stdout).get('prompt', '') if proc.returncode == 0 else ''
-        banned = ('fara', 'retina', 'jev', 'browser', 'fifth', 'score goes')
-        ok &= need('mind', proc, proc.returncode == 0 and 'CHECKLIST' in prompt and '20 percent' in prompt and 'P(yes)' in prompt and not any(word in prompt.lower() for word in banned))
+        banned = ('retina', 'jev', 'browser', 'fifth', 'score goes')
+        ok &= need('mind', proc, proc.returncode == 0 and 'CHECKLIST' in prompt and '20 percent' in prompt and 'P(yes)' in prompt and 'Fara eye is your only way' in prompt and 'After 9 completed tool calls' in prompt and 'reset after 42 completed tool calls' in prompt and 'then continue the task' in prompt and not any(word in prompt.lower() for word in banned))
     if not ok:
         sys.exit(1)
 

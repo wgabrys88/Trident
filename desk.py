@@ -316,10 +316,10 @@ class Desk:
 class Hand:
     name, flag = 'hands', 'hands_file'
     doc = '''$CALL --hands-file PATH
-Reads gesture lines or Python from the file. Points are 0-1000 of the region. Gestures are click, rclick, dclick, tclick, move, drag, scroll, wheel, hwheel, key, type, paste, and wait, one on each line.
+Reads gesture lines or Python from the file. For desktop actions, copy Fara's returned program unchanged; do not invent, calculate, or revise target coordinates. Points are 0-1000 of the region. Gestures are click, rclick, dclick, tclick, move, drag, scroll, wheel, hwheel, key, type, paste, and wait, one on each line.
 A stroke is a series of short moves with the button down: 12 steps, 12 ms apart, all through one input path. A jump of the cursor does not leave ink.
-Python is given desk, time, json, and Path. desk.image() reads pixels of the latest capture. That is a measurement of color. The eye is what a picture means.
-The call waits, then takes a capture.'''
+Python is given desk, time, json, and Path. Do not use hand Python to inspect screenshots, scan pixels, or calculate desktop target coordinates. Desktop perception belongs to Trident's Fara eye.
+The call waits, then takes a capture. Ask Fara what changed before choosing the next desktop action.'''
 
     def run(self, app, path, dry=False):
         src = read_file(path)

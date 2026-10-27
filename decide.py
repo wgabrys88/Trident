@@ -91,7 +91,7 @@ class Decide:
 Reads a narrative, a line of three dashes, then one question on each line.
 name?claim is a probability. name?text|a=One|b=Two is a choice. name#text|low|high is a score. name@target is a box.
 A probability is printed as P(yes)= and then yes or no. P(yes) is the probability the claim is true, not a yes by itself.
-Only a box sends the capture. A grade should be text, with the evidence written in the narrative.
+Only a box sends the capture. For desktop decisions, use Fara's written observations in the narrative and do not request a box or attach a screenshot to this model. Desktop perception belongs only to Trident's Fara eye. A grade should be text, with the evidence written in the narrative.
 A choice contains only the options in the file.'''
 
     def run(self, app, path, dry=False):
