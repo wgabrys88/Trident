@@ -950,7 +950,7 @@ def main(argv=None):
     parser.add_argument('--dry', action='store_true')
     parser.add_argument('--journal', action='store_true')
     for _name, flag, _fn, kind in TOOLS:
-        parser.add_argument('--' + flag, **({'action': 'store_true'} if kind == 'bool' else {'nargs': 5 if kind == 'place' else None}))
+        parser.add_argument('--' + flag.replace('_', '-'), **({'action': 'store_true'} if kind == 'bool' else {'nargs': 5 if kind == 'place' else None}))
     args = parser.parse_args(argv)
     configure(args.work or str(CODE), args.run, args.minutes, getattr(args, 'wake_start'), getattr(args, 'wake_end'), args.shot_delay or '1.5', args.vision_url or 'http://192.168.16.31:1234', args.vision_model or 'retina', args.decide_model or 'typesafe/jev-1.14-20261014', args.mind_model, args.coordinate_mode)
     SET['dry'] = bool(args.dry)
