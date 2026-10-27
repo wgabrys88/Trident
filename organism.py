@@ -164,10 +164,7 @@ def ensure_journal():
     if state is None:
         raise Fail(f'port {PORT} belongs to an unrelated listener')
     subprocess.Popen([str(PYTHON), '-B', str(CODE / 'main.py'), '--journal', '--work', SET['work'], '--run', SET['run']], cwd=SET['work'], env=os.environ | {'TRIDENT_JOURNAL': '1'}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x08000000)
-def clip(text, limit):
-    text = ' '.join(str(text or '').split())
-    return text if len(text) <= limit else text[:limit] + '...'
-def heading(kind, text='', limit=360):
+def heading(kind, text=''):
     if SET.get('dry') or RUN is None:
         return
     if os.environ.get('TRIDENT_JOURNAL') != '1':
@@ -176,7 +173,7 @@ def heading(kind, text='', limit=360):
             ensure_journal()
         except (OSError, Fail) as error:
             print(str(error), file=sys.stderr)
-    body = clip(text, limit)
+    body = '' if text is None else str(text)
     block = f"## {time.strftime('%H:%M:%S')} {kind}\n\n{body}\n\n" if body else f"## {time.strftime('%H:%M:%S')} {kind}\n\n"
     RUN.parent.mkdir(parents=True, exist_ok=True)
     with locked(RUN.with_suffix('.lock')):
@@ -196,9 +193,8 @@ def brief_result(kind, body):
 def emit(kind, payload):
     body = dict(payload)
     body.update(clock())
-    limit = 2000 if kind in ('windows', 'eye') else 500
-    line = clip(brief_result(kind, body), limit)
-    heading(kind, line, limit)
+    line = brief_result(kind, body)
+    heading(kind, line)
     print(line, flush=True)
     return body
 def serve_journal():
@@ -635,11 +631,11 @@ def eye_run(app, path, dry=False):
         screen, image = load_capture(app.work)
         try: seen = ask(app, image, screen, data['turns'])
         except Fail as error:
-            raw = clip(getattr(error, 'raw', None) or str(error), 400)
+            raw = str(getattr(error, 'raw', None) or error)
             put('assistant', text=raw, action='unparsed', coordinate=None, answer=raw, thought=raw)
-            heading('eye', 'action=unparsed coordinate= answer=' + raw, 2000); break
-        raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), clip(seen.get('thought') or '', 160)
-        heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}", 2000)
+            heading('eye', 'action=unparsed coordinate= answer=' + raw); break
+        raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), str(seen.get('thought') or '')
+        heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}")
         put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, answer=seen.get('answer') or '')
         if seen['action'] == 'terminate':
             data['open'] = False; json_file(file, data); break
@@ -854,7 +850,7 @@ def read_agent(proc, app, end):
             heading('think', f'chars={thought}'); thought = 0
         if kind == 'assistant' and text_of(item.get('message')):
             last = text_of(item.get('message'))
-            heading('say', last, 120)
+            heading('say', last)
         elif kind == 'tool_call' and sub == 'started':
             running += 1
         elif kind == 'tool_call' and sub == 'completed':
@@ -922,7 +918,7 @@ def drive(app, sentence, minutes):
         else:
             outcome = 'deadline' if end and time.time() >= end else 'stopped'
         if said:
-            heading('report', said, 400)
+            heading('report', said)
         return {'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}
     finally:
         mirror.set(); app.desk.close_job(job)
