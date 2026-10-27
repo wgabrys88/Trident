@@ -645,14 +645,14 @@ def eye_steps(app, text, end, limit, fresh):
         if seen['action'] == 'terminate':
             data['open'] = False; json_file(file, data); return 'terminated'
         if limit is None and not (app.work / 'eye.live').exists(): break
+        prior = next((turn for turn in reversed(data['turns'][:-1]) if turn.get('role') == 'assistant' and turn.get('action') not in (None, 'unparsed')), None)
+        if prior and prior.get('action') == seen['action'] and prior.get('coordinate') == coord:
+            put('user', text=f"Not done. {seen['action']} at {coord} already happened. Choose another action or another coordinate."); continue
         try:
             seen['goal'] = text
             execute(app.desk, store_action(app, screen, image, seen)['program'].split()[-1])
             time.sleep(float(SET.get('shot_delay') or 1.5))
-            prior = next((turn for turn in reversed(data['turns'][:-1]) if turn.get('role') == 'assistant' and turn.get('action') not in (None, 'unparsed')), None)
-            note = f"Done. action={seen['action']} coordinate={coord}"
-            if prior and prior.get('action') == seen['action'] and prior.get('coordinate') == coord: note += ' That action already happened at this coordinate. A stroke is left_click_drag with the end coordinate.'
-            put('user', text=note)
+            put('user', text=f"Done. action={seen['action']} coordinate={coord}")
         except Fail as error:
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
