@@ -877,7 +877,7 @@ def drive(app, sentence, minutes):
     if sentence:
         atomic(app.work / 'goal.txt', sentence)
     outcome, said, proc, job, previous, chat_index = 'failed', '', None, None, os.environ.get('TRIDENT_CHAT_ID'), 0
-    mirror = threading.Event()
+    app.mirror = mirror = threading.Event()
     def follow(seen=0):
         while True:
             try: data = RUN.read_bytes() if RUN.exists() else b''
@@ -886,7 +886,7 @@ def drive(app, sentence, minutes):
             if chunk: sys.stdout.buffer.write(chunk); sys.stdout.buffer.flush(); seen = len(data)
             if mirror.is_set(): return
             mirror.wait(0.4)
-    threading.Thread(target=follow, daemon=True).start()
+    app.mirror_thread = threading.Thread(target=follow, daemon=True); app.mirror_thread.start()
     try:
         heading('wake', f'minutes={minutes or ""}')
         while not (end and time.time() >= end) and not (app.work / 'stop').exists():
@@ -921,7 +921,7 @@ def drive(app, sentence, minutes):
             heading('report', said)
         return {'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}
     finally:
-        mirror.set(); app.desk.close_job(job)
+        app.desk.close_job(job)
         if proc is not None and proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
@@ -978,6 +978,7 @@ def main(argv=None):
         raise
     if isinstance(result, dict):
         emit(name, result)
+    if getattr(app, 'mirror', None): app.mirror.set(); app.mirror_thread.join(2)
 if __name__ == '__main__':
     if len(sys.argv) > 2 and sys.argv[1] == '--boot':
         try:
