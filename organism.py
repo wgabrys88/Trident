@@ -649,7 +649,10 @@ def eye_steps(app, text, end, limit, fresh):
             seen['goal'] = text
             execute(app.desk, store_action(app, screen, image, seen)['program'].split()[-1])
             time.sleep(float(SET.get('shot_delay') or 1.5))
-            put('user', text=f"Done. action={seen['action']} coordinate={coord}")
+            prior = next((turn for turn in reversed(data['turns'][:-1]) if turn.get('role') == 'assistant' and turn.get('action') not in (None, 'unparsed')), None)
+            note = f"Done. action={seen['action']} coordinate={coord}"
+            if prior and prior.get('action') == seen['action'] and prior.get('coordinate') == coord: note += ' That action already happened at this coordinate. A stroke is left_click_drag with the end coordinate.'
+            put('user', text=note)
         except Fail as error:
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
