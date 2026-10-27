@@ -30,7 +30,7 @@ DOCS = (
 '--windows. List titled windows. A minimized window has box null.',
 '--region NONE or LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen.',
 '--place HWND LEFT TOP RIGHT BOTTOM. Move a window only when the sentence asks.',
-'--learn. Count headings in up to five earlier run markdown files.',
+'--learn. Count headings in earlier run markdown files.',
 '--stop. Write the stop file. The mind gets up to 60 seconds, or less if the deadline is sooner.',
 '--mind-file PATH. Run the sentence until a result, failure, stop, or deadline.',
 '--map. Print the line count, the vision server, and the tool flags.',
