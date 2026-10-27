@@ -182,7 +182,7 @@ def heading(kind, text=''):
 def brief_result(kind, body):
     if kind == 'windows':
         rows = body.get('windows') or []
-        return f"count={len(rows)} " + '; '.join(f"{row.get('hwnd')}|{row.get('title')}|{row.get('box')}" for row in rows[:12])
+        return f"count={len(rows)} " + '; '.join(f"{row.get('hwnd')}|{row.get('title')}|{row.get('box')}" for row in rows)
     if kind in ('capture', 'hands'):
         return f"id={body.get('id')} size={body.get('size')} cursor={body.get('cursor')}"
     if kind == 'eye':
@@ -608,7 +608,7 @@ def execute(desk, action_id):
                 del desk.action_box
 def eye_log(data):
     rows = [f"action={t.get('action')} coordinate={t.get('coordinate')} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
-    return ('open' if data.get('open') else 'terminated') + '\n' + '\n'.join(rows[-12:])
+    return ('open' if data.get('open') else 'terminated') + '\n' + '\n'.join(rows)
 def eye_run(app, path, dry=False):
     text = read_file(path).strip()
     if not text: raise Fail('the eye file is empty')
