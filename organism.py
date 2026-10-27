@@ -760,7 +760,7 @@ def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
     current, earlier = journals(app.work, SET['run'])
     status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
-    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 20 percent remaining, stop new work, write the story and one ledger lesson, and stop.' if minutes else 'No end time was given.'
+    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 5 percent remaining, stop new work, write the story and one ledger lesson, and stop.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
     fara = eye_log(json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {'open': False, 'turns': []})
