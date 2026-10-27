@@ -178,4 +178,4 @@ def serve_journal():
             self.send_error(404)
 
     ThreadingHTTPServer.allow_reuse_address = True
-    ThreadingHTTPServer(('127.0.0.1', PORT), Handler).serve_forever()
+    ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
