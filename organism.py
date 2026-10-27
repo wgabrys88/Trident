@@ -770,9 +770,12 @@ def text_of(message):
     if isinstance(content, list):
         return ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
     return '' if content is None else str(content)
-def tool_name(item):
-    call = item.get('tool_call') or {}
-    return next((key[:-8] for key in call if str(key).endswith('ToolCall')), 'tool')
+def lean(node, keep=None):
+    if isinstance(node, list): return [lean(item, keep) for item in node]
+    if not isinstance(node, dict): return node
+    if keep is None: keep = next((value['args'].get('command') for value in node.values() if isinstance(value, dict) and isinstance(value.get('args'), dict)), None)
+    drop = {'parsingResult', 'hookAdditionalContexts'}
+    return {key: lean(value, keep) if isinstance(value, (dict, list)) else value for key, value in node.items() if key not in drop and not (key == 'interleavedOutput' and value == node.get('stdout')) and not (key == 'command' and value == keep and 'stdout' in node)}
 def spawn(app, model, prompt_path, job_name):
     vendor, profile = app.work / 'agent', app.work / 'agent' / 'config'
     profile.mkdir(parents=True, exist_ok=True)
@@ -856,7 +859,7 @@ def read_agent(proc, app, end):
         elif kind == 'tool_call' and sub == 'completed':
             running = max(0, running - 1)
             calls += 1
-            heading('tool', json.dumps(item.get('tool_call') or {}, ensure_ascii=False))
+            heading('tool', json.dumps(lean(item.get('tool_call') or {}), ensure_ascii=False))
             if calls >= 42 and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
                 return finish('rotate')
         elif kind == 'system' and sub == 'init':
