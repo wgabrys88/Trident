@@ -676,12 +676,13 @@ def journals(work, run):
     work = Path(work)
     paths = sorted(set(work.glob('run_*.md')) | {work / f'run_{run}.md'})
     rows = [measured(path) for path in paths]
-    return next(row for row in rows if row['run'] == run), [row for row in rows if row['run'] != run][-5:]
+    return next(row for row in rows if row['run'] == run), [row for row in rows if row['run'] != run]
 def learned_line(rows, ledger):
     calls = sum(sum(row['component_actions'].values()) for row in rows)
     errors = sum(row.get('recorded_errors') or 0 for row in rows)
     advice = 'Compare the newest ledger line with the run markdown.' if str(ledger or '').strip() else 'There is no ledger lesson yet.'
-    return f'{len(rows)} earlier wakes, {errors} recorded errors, {calls} component actions. {advice}'
+    names = ', '.join(row['run'] for row in rows)
+    return f'{len(rows)} earlier wakes ({names}), {errors} recorded errors, {calls} component actions. {advice}'
 def snapshot(work):
     work = Path(work)
     with locked(work / 'memory.lock'):
@@ -711,8 +712,6 @@ def _enter(work, lesson, state):
     used = f'{(time.time() - start) / 60:.1f}' if start is not None else 'unknown'
     budget = f' of {float(minutes):g}' if minutes else ''
     kept.append(f"{SET['run']} {stamp} used {used}{budget} min, {state}\n{lesson}\n")
-    while len(kept) > 12 or sum(map(len, kept)) > 8000:
-        del kept[0]
     atomic(path, ''.join('## wake ' + part for part in kept))
     return {'wakes': len(kept), 'lesson_len': len(lesson)}
 def current_lesson(work):
