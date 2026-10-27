@@ -19,12 +19,13 @@ MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001
 KEYUP, EXTENDED = 0x0002, 0x0001
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
-MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
-On every chat, including after 42 tool calls, read FARA and replan. Mid-subtask, pass one adjustment sentence. After terminated, pass the next subtask sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
+MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
+On every chat, including after 42 tool calls, read FARA and replan. While her log says open, do not call --eye-file again. Read organism.py. Edit it only when this wake's record shows a defect in that file. The running process keeps the loaded body. After terminated, pass the next subtask sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
+A terminate answer is her claim. Do not --stop because she says the task is done. --stop only in the last 5 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
 This chat rotates after 42 completed tool calls. After 35, write the story and replace this wake's ledger lesson, then continue. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
 On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
 DOCS = (
-'--eye-file PATH. The current subtask sentence. Fara runs until she terminates or 8 actions. The result is her log: thoughts, actions, and coordinates.',
+'--eye-file PATH. Write the current subtask sentence. While the wake eye is live, return her log at once. Otherwise Fara runs until she terminates or 8 actions.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
 '--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
 '--windows. List titled windows. A minimized window has box null.',
@@ -609,23 +610,26 @@ def execute(desk, action_id):
 def eye_log(data):
     rows = [f"action={t.get('action')} coordinate={t.get('coordinate')} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
     return ('open' if data.get('open') else 'terminated') + '\n' + '\n'.join(rows)
-def eye_run(app, path, dry=False):
-    text = read_file(path).strip()
-    if not text: raise Fail('the eye file is empty')
-    if dry: return {'log': 'dry'}
+def eye_halted(app, end):
+    return (app.work / 'stop').exists() or bool(end and time.time() >= end)
+def eye_steps(app, text, end, limit, fresh):
     file = app.work / 'fara_traj.json'
-    data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
-    data = data if data.get('open') else {'open': True, 'turns': []}
+    if fresh: data = {'open': True, 'turns': []}
+    else:
+        data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
+        data = data if data.get('open') else {'open': True, 'turns': []}
     def put(role, **fields):
         data['turns'].append({'role': role, **fields}); json_file(file, data)
     put('user', text=text)
-    for _ in range(8):
-        if (app.work / 'stop').exists() or (SET.get('wake_end') and time.time() >= float(SET['wake_end'])): break
+    steps = 0
+    while not eye_halted(app, end) and (limit is None or steps < limit):
+        if limit is None and not (app.work / 'eye.live').exists(): break
+        steps += 1
         last = data['turns'][-1]
         if last.get('role') != 'user' or not last.get('shot'):
             shot = app.desk.capture()
             if shot.get('blank'):
-                put('user', text='blank capture', shot=shot.get('id')); break
+                put('user', text='blank capture', shot=shot.get('id')); return 'blank'
             last.update(shot=shot['id']) if last.get('role') == 'user' else data['turns'].append({'role': 'user', 'text': 'observe', 'shot': shot['id']})
             json_file(file, data)
         screen, image = load_capture(app.work)
@@ -633,12 +637,14 @@ def eye_run(app, path, dry=False):
         except Fail as error:
             raw = str(getattr(error, 'raw', None) or error)
             put('assistant', text=raw, action='unparsed', coordinate=None, answer=raw, thought=raw)
-            heading('eye', 'action=unparsed coordinate= answer=' + raw); break
+            heading('eye', 'action=unparsed coordinate= answer=' + raw)
+            put('user', text=str(error)); continue
         raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), str(seen.get('thought') or '')
         heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}")
         put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, answer=seen.get('answer') or '')
         if seen['action'] == 'terminate':
-            data['open'] = False; json_file(file, data); break
+            data['open'] = False; json_file(file, data); return 'terminated'
+        if limit is None and not (app.work / 'eye.live').exists(): break
         try:
             seen['goal'] = text
             execute(app.desk, store_action(app, screen, image, seen)['program'].split()[-1])
@@ -648,7 +654,35 @@ def eye_run(app, path, dry=False):
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
             if halted: break
-    return {'log': eye_log(data)}
+    return 'halted'
+def eye_data(app):
+    file = app.work / 'fara_traj.json'
+    return json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
+def eye_watch(app, end):
+    path, finished, born = app.work / 'eye_now.txt', None, time.time()
+    while (app.work / 'eye.live').exists() and not eye_halted(app, end):
+        try: stamp, sentence = path.stat().st_mtime, path.read_text(encoding='utf-8').strip()
+        except OSError: stamp, sentence = 0, ''
+        if not sentence or stamp < born or sentence == finished:
+            time.sleep(0.4); continue
+        if eye_steps(app, sentence, end, None, True) == 'terminated': finished = sentence
+        else: time.sleep(0.4)
+def eye_run(app, path, dry=False):
+    text = read_file(path).strip()
+    if not text: raise Fail('the eye file is empty')
+    if dry: return {'log': 'dry'}
+    atomic(app.work / 'eye_now.txt', text)
+    if (app.work / 'eye.live').exists():
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            data = eye_data(app)
+            turns = data.get('turns') or []
+            if data.get('open') and turns and turns[0].get('text') == text: break
+            time.sleep(0.2)
+        return {'log': eye_log(eye_data(app))}
+    end = float(SET['wake_end']) if SET.get('wake_end') else None
+    eye_steps(app, text, end, 8, False)
+    return {'log': eye_log(eye_data(app))}
 def windows_run(app, _arg, dry=False): return {'windows': app.desk.windows()}
 def region_run(app, value, dry=False):
     value = str(value or 'NONE').strip()
@@ -758,13 +792,15 @@ def brain(sentence):
     return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-medium-fast')
 def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
+    campaign_path = app.work / 'campaign.txt'
+    campaign = campaign_path.read_text(encoding='utf-8') if campaign_path.exists() else ''
     current, earlier = journals(app.work, SET['run'])
     status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
-    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 5 percent remaining, stop new work, write the story and one ledger lesson, and stop.' if minutes else 'No end time was given.'
+    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 5 percent remaining, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
     fara = eye_log(json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {'open': False, 'turns': []})
-    return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'FARA', fara, 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
+    return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'CAMPAIGN', campaign or '(empty)', 'FARA', fara, 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
 def text_of(message):
     content = (message or {}).get('content') if isinstance(message, dict) else message
     if isinstance(content, list):
@@ -892,6 +928,13 @@ def drive(app, sentence, minutes):
     app.mirror_thread = threading.Thread(target=follow, daemon=True); app.mirror_thread.start()
     try:
         heading('wake', f'minutes={minutes or ""}')
+        traj = app.work / 'fara_traj.json'
+        if traj.exists():
+            prior = json.loads(traj.read_text(encoding='utf-8'))
+            if prior.get('open'):
+                prior['open'] = False; json_file(traj, prior)
+        atomic(app.work / 'eye.live', '1')
+        app.eye_thread = threading.Thread(target=eye_watch, args=(app, end), daemon=True); app.eye_thread.start()
         while not (end and time.time() >= end) and not (app.work / 'stop').exists():
             chat_index += 1
             os.environ['TRIDENT_CHAT_ID'] = f"{SET['run']}:{chat_index}"
@@ -924,6 +967,8 @@ def drive(app, sentence, minutes):
             heading('report', said)
         return {'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}
     finally:
+        (app.work / 'eye.live').unlink(missing_ok=True)
+        if getattr(app, 'eye_thread', None): app.eye_thread.join(5)
         app.desk.close_job(job)
         if proc is not None and proc.poll() is None:
             proc.kill()
