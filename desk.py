@@ -1,9 +1,10 @@
-import ctypes, io, json, struct, subprocess, time, zlib
+import ctypes, hashlib, io, json, struct, subprocess, time, uuid, zlib
 from contextlib import redirect_stdout
 from ctypes import wintypes as W
 from pathlib import Path
 
-from base import NORM, SET, Fail, read_file
+from base import NORM, SET, Fail, read_file, event
+from state import atomic, json_file, locked
 
 SRCCOPY, CAPTUREBLT, HALFTONE = 0x00CC0020, 0x40000000, 4
 MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0800, 0x1000, 0x8000
@@ -11,7 +12,7 @@ KEYUP, EXTENDED = 0x0002, 0x0001
 SETTLE, DOUBLE_GAP, TYPE_DOWN, TYPE_GAP, HOTKEY_GAP, SCROLL_GAP, DRAG_GAP, DRAG_STEPS = 0.03, 0.05, 0.01, 0.02, 0.02, 0.03, 0.012, 12
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
-GESTURES = frozenset(('click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
+GESTURES = frozenset(('fara', 'click', 'rclick', 'dclick', 'tclick', 'move', 'drag', 'scroll', 'wheel', 'hwheel', 'key', 'wait', 'type', 'paste'))
 
 
 def bind(name, table):
@@ -41,8 +42,17 @@ class MouseInput(ctypes.Structure):
     _fields_ = [('dx', ctypes.c_long), ('dy', ctypes.c_long), ('mouseData', ctypes.c_uint), ('dwFlags', ctypes.c_uint), ('time', ctypes.c_uint), ('dwExtraInfo', ctypes.c_ulonglong)]
 
 
+class KeyboardInput(ctypes.Structure):
+    _fields_ = [('wVk', W.WORD), ('wScan', W.WORD), ('dwFlags', W.DWORD), ('time', W.DWORD), ('dwExtraInfo', ctypes.c_ulonglong)]
+
+
+class InputData(ctypes.Union):
+    _fields_ = [('mi', MouseInput), ('ki', KeyboardInput)]
+
+
 class Input(ctypes.Structure):
-    _fields_ = [('type', ctypes.c_uint), ('mi', MouseInput)]
+    _anonymous_ = ('data',)
+    _fields_ = [('type', ctypes.c_uint), ('data', InputData)]
 
 
 class JobBasicLimits(ctypes.Structure):
@@ -69,8 +79,15 @@ def send(flags, px=0, py=0, data=0, absolute=False):
     width, height = screen_size()
     dx = int(px * 65535 / max(1, width - 1)) if absolute else 0
     dy = int(py * 65535 / max(1, height - 1)) if absolute else 0
-    packet = Input(0, MouseInput(dx, dy, int(data) & 0xFFFFFFFF, flags | (ABSOLUTE if absolute else 0)))
-    user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(packet))
+    packet = Input()
+    packet.type = 0
+    packet.mi = MouseInput(dx, dy, int(data) & 0xFFFFFFFF, flags | (ABSOLUTE if absolute else 0))
+    deliver(packet)
+
+
+def deliver(packet):
+    if user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(packet)) != 1:
+        raise Fail(f'SendInput did not deliver input (Win32 error {ctypes.get_last_error()})')
 
 
 def swap_red_blue(pixels):
@@ -113,19 +130,27 @@ class Desk:
         return raw or 'NONE'
 
     def _box(self):
+        if getattr(self, 'action_box', None) is not None:
+            return tuple(self.action_box)
         raw = self.region()
         box = (0, 0, NORM, NORM) if raw == 'NONE' else tuple(int(part) for part in raw.split(','))
         return to_pixels(box, *screen_size())
 
     def point(self, x, y):
         x1, y1, x2, y2 = self._box()
-        return x1 + (clamp(x) * (x2 - x1 - 1) + NORM // 2) // NORM, y1 + (clamp(y) * (y2 - y1 - 1) + NORM // 2) // NORM
+        return x1 + round(max(0, min(NORM, float(x))) * (x2 - x1 - 1) / NORM), y1 + round(max(0, min(NORM, float(y))) * (y2 - y1 - 1) / NORM)
 
     def position(self):
         at, (width, height) = W.POINT(), screen_size()
         user32.GetCursorPos(ctypes.byref(at))
         x1, y1, x2, y2 = self._box()
-        return [clamp(((at.x - x1) * NORM + (x2 - x1) // 2) // max(1, x2 - x1)), clamp(((at.y - y1) * NORM + (y2 - y1) // 2) // max(1, y2 - y1))]
+        return [max(0, min(NORM, (at.x - x1) * NORM / max(1, x2 - x1 - 1))), max(0, min(NORM, (at.y - y1) * NORM / max(1, y2 - y1 - 1)))]
+
+    def cursor_pixel(self):
+        at = W.POINT()
+        if not user32.GetCursorPos(ctypes.byref(at)):
+            raise Fail('cannot read cursor provenance')
+        return [at.x, at.y]
 
     def move(self, x, y):
         send(MOVE, *self.point(x, y), absolute=True)
@@ -137,9 +162,11 @@ class Desk:
         time.sleep(SETTLE)
         down, up = (RIGHT_DOWN, RIGHT_UP) if right else (LEFT_DOWN, LEFT_UP)
         for _ in range(max(1, times)):
-            send(down, px, py, absolute=True)
-            time.sleep(SETTLE)
-            send(up, px, py, absolute=True)
+            try:
+                send(down, px, py, absolute=True)
+                time.sleep(SETTLE)
+            finally:
+                send(up, px, py, absolute=True)
             time.sleep(DOUBLE_GAP if times > 1 else 0)
 
     def drag(self, points):
@@ -149,14 +176,16 @@ class Desk:
         send(LEFT_UP)
         send(MOVE, *pixels[0], absolute=True)
         time.sleep(SETTLE)
-        send(LEFT_DOWN, *pixels[0], absolute=True)
-        time.sleep(SETTLE)
-        for (x0, y0), (x1, y1) in zip(pixels, pixels[1:]):
-            for step in range(1, DRAG_STEPS + 1):
-                send(MOVE, x0 + (x1 - x0) * step // DRAG_STEPS, y0 + (y1 - y0) * step // DRAG_STEPS, absolute=True)
-                time.sleep(DRAG_GAP)
-        time.sleep(SETTLE)
-        send(LEFT_UP, *pixels[-1], absolute=True)
+        try:
+            send(LEFT_DOWN, *pixels[0], absolute=True)
+            time.sleep(SETTLE)
+            for (x0, y0), (x1, y1) in zip(pixels, pixels[1:]):
+                for step in range(1, DRAG_STEPS + 1):
+                    send(MOVE, x0 + (x1 - x0) * step // DRAG_STEPS, y0 + (y1 - y0) * step // DRAG_STEPS, absolute=True)
+                    time.sleep(DRAG_GAP)
+            time.sleep(SETTLE)
+        finally:
+            send(LEFT_UP)
 
     def wheel(self, amount, x=None, y=None, horizontal=False):
         if x is not None:
@@ -179,33 +208,45 @@ class Desk:
                 codes.append(code & 0xFF)
             else:
                 raise Fail(f'unknown key: {name}')
-        for vk in codes:
-            self._key(vk)
-            time.sleep(HOTKEY_GAP)
-        for vk in reversed(codes):
-            self._key(vk, up=True)
-            time.sleep(HOTKEY_GAP)
+        self._chord(codes, HOTKEY_GAP)
+
+    def _chord(self, codes, delay=0):
+        held = []
+        try:
+            for vk in codes:
+                held.append(vk)
+                self._key(vk)
+                time.sleep(delay)
+        finally:
+            failures = []
+            for vk in reversed(held):
+                try:
+                    self._key(vk, up=True)
+                except Fail as error:
+                    failures.append(str(error))
+            if failures:
+                raise Fail('; '.join(failures))
 
     def _key(self, vk, up=False):
-        user32.keybd_event(vk, 0, (KEYUP if up else 0) | (EXTENDED if vk in EXTENDED_VKS else 0), None)
+        packet = Input()
+        packet.type = 1
+        packet.ki = KeyboardInput(vk, 0, (KEYUP if up else 0) | (EXTENDED if vk in EXTENDED_VKS else 0), 0, 0)
+        deliver(packet)
 
     def type_text(self, value):
-        value = str(value)
+        value = str(value).replace('\r\n', '\n').replace('\r', '\n')
         if any(ord(char) > 126 for char in value):
             self.paste(value)
             return
         for char in value:
+            if char in ('\n', '\t'):
+                self.key('enter' if char == '\n' else 'tab')
+                continue
             code = user32.VkKeyScanW(char)
             if code == -1:
                 raise Fail(f'unmappable character: {char!r}')
             modifiers = [vk for bit, vk in ((0x200, 0x11), (0x400, 0x12), (0x100, 0x10)) if code & bit]
-            for vk in modifiers:
-                self._key(vk)
-            self._key(code & 0xFF)
-            time.sleep(TYPE_DOWN)
-            self._key(code & 0xFF, up=True)
-            for vk in reversed(modifiers):
-                self._key(vk, up=True)
+            self._chord(modifiers + [code & 0xFF], TYPE_DOWN)
             time.sleep(TYPE_GAP)
 
     def paste(self, value):
@@ -213,8 +254,8 @@ class Desk:
         self.key('ctrl+v')
 
     def image(self):
-        screen = json.loads((self.work / 'screen.json').read_text(encoding='utf-8-sig'))
-        return unpng(Path(screen['image']).read_bytes())
+        from eye import load_capture
+        return load_capture(self)[1]
 
     def grab(self):
         width, height = screen_size()
@@ -255,18 +296,27 @@ class Desk:
         return out, width, height
 
     def capture(self):
-        x1, y1, x2, y2 = self._box()
-        image = self.stretch(self.grab(), (x1, y1, x2, y2), max(1, x2 - x1), max(1, y2 - y1))
-        shots = self.work / 'shots'
-        shots.mkdir(exist_ok=True)
-        sid = time.strftime('%H%M%S') + f'{time.time_ns() // 1000 % 1000:03d}'
-        path = shots / f'{sid}.png'
-        path.write_bytes(png(image))
-        body = dict(id=sid, image=str(path), size=list(image[1:]), region=self.region(), at=round(time.time(), 3))
-        if blank(image[0]):
-            body['blank'] = True
-        (self.work / 'screen.json').write_text(json.dumps(body), encoding='utf-8')
-        return body
+        with locked(self.work / 'capture.lock'):
+            region, size, windows = self.region(), list(screen_size()), self.windows()
+            x1, y1, x2, y2 = self._box()
+            image = self.stretch(self.grab(), (x1, y1, x2, y2), max(1, x2 - x1), max(1, y2 - y1))
+            if region != self.region() or size != list(screen_size()) or windows != self.windows():
+                raise Fail('desktop geometry changed during capture; capture again')
+            shots = self.work / 'shots'
+            shots.mkdir(exist_ok=True)
+            sid = time.strftime('%H%M%S') + '-' + uuid.uuid4().hex
+            path = shots / f'{sid}.png'
+            data = png(image)
+            atomic(path, data)
+            body = dict(id=sid, image=str(path), size=list(image[1:]), region=region, box=[x1, y1, x2, y2], screen_size=size,
+                        windows=windows, cursor_pixel=self.cursor_pixel(), at=time.time(), sha256=hashlib.sha256(data).hexdigest())
+            body['cursor'] = [(value - start) * NORM / max(1, length - 1) for value, start, length in zip(body['cursor_pixel'], (x1, y1), image[1:])]
+            if blank(image[0]):
+                body['blank'] = True
+            json_file(shots / f'{sid}.json', body)
+            json_file(self.work / 'screen.json', body)
+            event('capture_saved', body)
+            return body
 
     def windows(self):
         found, front, (width, height) = [], user32.GetForegroundWindow(), screen_size()
@@ -281,7 +331,7 @@ class Desk:
                 user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
                 minimized = bool(user32.IsIconic(hwnd))
                 box = None if minimized else [rect.left * NORM // width, rect.top * NORM // height, rect.right * NORM // width, rect.bottom * NORM // height]
-                found.append(dict(hwnd=int(hwnd), title=title.value, box=box, pid=int(pid.value), minimized=minimized, topmost=bool(user32.GetWindowLongW(hwnd, -20) & 0x00000008), foreground=hwnd == front))
+                found.append(dict(hwnd=int(hwnd), title=title.value, box=box, pixel_box=None if minimized else [rect.left, rect.top, rect.right, rect.bottom], pid=int(pid.value), minimized=minimized, topmost=bool(user32.GetWindowLongW(hwnd, -20) & 0x00000008), foreground=hwnd == front))
             return True
 
         user32.EnumWindows(ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)(visit), 0)
@@ -296,12 +346,18 @@ class Desk:
         moved = bool(user32.SetWindowPos(int(hwnd), ctypes.c_void_p(-2), left * width // NORM, top * height // NORM, max((right - left) * width // NORM, 1), max((bottom - top) * height // NORM, 1), 0x0040))
         return dict(hwnd=int(hwnd), box=[left, top, right, bottom], moved=moved, err=ctypes.get_last_error())
 
-    def open_job(self, handle):
-        job, limits = kernel32.CreateJobObjectW(None, None), JobLimits()
+    def open_job(self, handle=None, name=None):
+        job, limits = kernel32.CreateJobObjectW(None, name), JobLimits()
         limits.BasicLimitInformation.LimitFlags = 0x2000
         if not (job and kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))):
+            self.close_job(job)
             raise Fail('the wake could not open a job')
-        self.assign_job(job, handle)
+        try:
+            if handle is not None:
+                self.assign_job(job, handle)
+        except BaseException:
+            self.close_job(job)
+            raise
         return job
 
     def assign_job(self, job, handle):
@@ -316,7 +372,7 @@ class Desk:
 class Hand:
     name, flag = 'hands', 'hands_file'
     doc = '''$CALL --hands-file PATH
-Reads gesture lines or Python from the file. For desktop actions, copy Fara's returned program unchanged; do not invent, calculate, or revise target coordinates. Points are 0-1000 of the region. Gestures are click, rclick, dclick, tclick, move, drag, scroll, wheel, hwheel, key, type, paste, and wait, one on each line.
+For desktop actions, copy exactly one Fara program: fara ACTION_ID. The body checks a fresh capture, geometry and target patch before input; refused or consumed records require a new Fara grounding. Do not invent, calculate, or revise coordinates. Legacy gesture/Python files remain compatible but are not the advertised desktop path.
 A stroke is a series of short moves with the button down: 12 steps, 12 ms apart, all through one input path. A jump of the cursor does not leave ink.
 Python is given desk, time, json, and Path. Do not use hand Python to inspect screenshots, scan pixels, or calculate desktop target coordinates. Desktop perception belongs to Trident's Fara eye.
 The call waits, then takes a capture. Ask Fara what changed before choosing the next desktop action.'''
@@ -330,13 +386,18 @@ The call waits, then takes a capture. Ask Fara what changed before choosing the 
         time.sleep(float(SET.get('shot_delay') or 1.5))
         shot = app.desk.capture()
         shot['stdout'] = out.getvalue()
-        (app.work / 'screen.json').write_text(json.dumps(shot), encoding='utf-8')
         return shot
 
     def _run(self, desk, src):
         lines = [line.strip() for line in src.splitlines() if line.strip()]
         if not lines:
             raise Fail('the hand file is empty')
+        if lines[0].split(None, 1)[0] == 'fara':
+            if len(lines) != 1 or len(lines[0].split()) != 2:
+                raise Fail('copy exactly one Fara program')
+            from grounding import execute
+            execute(desk, lines[0].split()[1])
+            return
         if lines[0].split(None, 1)[0] not in GESTURES:
             exec(compile(src, '<hands>', 'exec'), dict(desk=desk, time=time, json=json, Path=Path))
             return

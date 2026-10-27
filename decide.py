@@ -1,7 +1,7 @@
 import json, urllib.request
 from pathlib import Path
 
-from base import NORM, SET, Fail, read_file
+from base import NORM, SET, Fail, read_file, event
 from desk import png
 
 URL = 'https://openrouter.ai/api/alpha/decisions'
@@ -44,25 +44,28 @@ def parse_questions(lines):
 
 
 def format_noul(name, probability):
+    if probability is None:
+        return f'{name}: P(yes)=unknown'
     probability = float(probability)
-    line = f'{name}: P(yes)={probability:.2f}'
-    if probability < 0.5:
-        line += ' no'
-    return line
+    if not 0 <= probability <= 1:
+        raise Fail('probability must be finite and between zero and one')
+    return f'{name}: P(yes)={probability:.2f}'
 
 
 def summarize(name, answer):
     kind = answer.get('type')
     if kind == 'noul':
-        return format_noul(name, answer.get('p', answer.get('noul', 0)))
+        return format_noul(name, answer.get('p', answer.get('noul')))
     if kind == 'choice':
         probs = ', '.join(f'{key} {float(value):.2f}' for key, value in (answer.get('probabilities') or {}).items())
         return f"{name}: {answer.get('choice')} ({probs})"
     if kind == 'box':
+        if 'norm' not in answer:
+            return f'{name}: box unknown'
         left, top, right, bottom = answer['norm']
         padded = ' padded' if answer.get('padded') else ''
         return f'{name}: box {left} {top} {right} {bottom}{padded}'
-    return f"{name}: score {float(answer.get('score', 0)):.2f}"
+    return f"{name}: score {float(answer['score']):.2f}" if answer.get('score') is not None else f'{name}: score unknown'
 
 
 def pad(image):
@@ -90,7 +93,7 @@ class Decide:
     doc = '''$CALL --decide-file PATH
 Reads a narrative, a line of three dashes, then one question on each line.
 name?claim is a probability. name?text|a=One|b=Two is a choice. name#text|low|high is a score. name@target is a box.
-A probability is printed as P(yes)= and then yes or no. P(yes) is the probability the claim is true, not a yes by itself.
+A probability is printed numerically as P(yes)=0.00 to 1.00, or unknown if missing. It is the probability the claim is true, not a yes/no decision.
 Only a box sends the capture. For desktop decisions, use Fara's written observations in the narrative and do not request a box or attach a screenshot to this model. Desktop perception belongs only to Trident's Fara eye. A grade should be text, with the evidence written in the narrative.
 A choice contains only the options in the file.'''
 
@@ -104,7 +107,12 @@ A choice contains only the options in the file.'''
 
     def ask(self, app, narrative, questions):
         boxed = any(item['type'] == 'box' for item in questions.values())
-        state = ['STORY: ' + (app.work / 'story.txt').read_text(encoding='utf-8') if (app.work / 'story.txt').exists() else '', 'LEDGER: ' + (app.work / 'ledger.md').read_text(encoding='utf-8') if (app.work / 'ledger.md').exists() else '', 'WHY: ' + narrative, 'GOAL: ' + (app.work / 'goal.txt').read_text(encoding='utf-8') if (app.work / 'goal.txt').exists() else '']
+        from memory import snapshot
+        from evidence import context
+        story, ledger, meta = snapshot(app.work)
+        state = ['STORY: ' + story, 'PROVENANCE: ' + json.dumps(meta), 'LEDGER (narrative claims): ' + ledger,
+                 'MEASURED: ' + json.dumps(context(app.work, SET['run'], ledger)), 'WHY: ' + narrative,
+                 'GOAL: ' + (app.work / 'goal.txt').read_text(encoding='utf-8') if (app.work / 'goal.txt').exists() else '']
         scale_x = scale_y = 1
         if boxed:
             screen = json.loads((app.work / 'screen.json').read_text(encoding='utf-8-sig'))
@@ -116,6 +124,7 @@ A choice contains only the options in the file.'''
         request = urllib.request.Request(URL, json.dumps(dict(model=SET['decide_model'], state=state, questions=questions)).encode(), {'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token})
         with urllib.request.urlopen(request, timeout=60) as response:
             body = json.load(response)
+        event('decision_response', body)
         answers = {}
         for name, answer in (body.get('answers') or {}).items():
             if answer.get('type') == 'noul':
@@ -124,7 +133,8 @@ A choice contains only the options in the file.'''
                 answers[name] = dict(type='box', norm=norm_box(answer['box'], scale_x, scale_y), padded=scale_x != 1 or scale_y != 1, confidence=answer.get('confidence'))
             else:
                 answers[name] = answer
-        return dict(answers=answers, summary='\n'.join(summarize(name, answer) for name, answer in answers.items()), usage=body.get('usage') or {})
+        from evidence import cost
+        return dict(answers=answers, summary='\n'.join(summarize(name, answer) for name, answer in answers.items()), **cost(body.get('usage')), requested_model=SET['decide_model'], reported_model=body.get('model'))
 
 
 def unpng_screen(screen):

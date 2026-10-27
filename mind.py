@@ -1,8 +1,10 @@
-import json, os, subprocess, time
+import json, os, queue, subprocess, threading, time, uuid
 from pathlib import Path
 
-from base import CODE, SET, Fail, log
-from memory import current_lesson, enter, learn
+from base import CODE, SET, Fail, event, log
+from memory import current_lesson, enter, learn, snapshot
+from evidence import context, usage_summary
+from state import atomic
 
 CHAT_CALLS = 42
 CHAT_CHECKPOINT_CALLS = 9
@@ -19,6 +21,8 @@ Trident's Fara eye is your only way to perceive the desktop or screenshots. Requ
 Give Fara one semantic action or observation request at a time, naming the window and target. Ask whether a control is visible before you ask for a click. If grounding is uncertain, ask a clearer question or use zoom. If Fara cannot see the target or is unavailable, report that limitation; do not invent coordinates or switch to native vision.
 
 Fara grounds desktop actions; the body converts and executes its output. Copy Fara's returned program unchanged into a hand file. Do not calculate or revise desktop target coordinates. After acting, ask Fara what changed before choosing the next micro-task.
+
+Use the body's --measure-file only for numerical diagnostics with explicit Fara-grounded bounds and exclusions. It measures visible pixels, not semantic coverage or hidden canvas. These perception instructions are a prompt contract, not a security boundary.
 
 The decision call returns probabilities. P(yes) is the probability the claim is true, not a yes. For desktop decisions, put Fara's written observations in the narrative; do not attach screenshots to another model.
 
@@ -43,7 +47,7 @@ def brain(sentence):
 def budget(minutes, end):
     if not minutes:
         return 'No end time was given to the process. If the sentence names one, keep it.'
-    when = time.strftime('%H:%M', time.localtime(end))
+    when = time.strftime('%H:%M:%S', time.localtime(end))
     return f'The wake has {minutes:g} minutes and the process ends at {when}. When under 20 percent of the time remains, stop starting new work, write the story and one ledger lesson, and stop.'
 
 
@@ -52,10 +56,13 @@ def read_text(path):
 
 
 def prompt(app, sentence, minutes, end, docs):
-    story = read_text(app.work / 'story.txt') or '(empty)'
-    ledger = read_text(app.work / 'ledger.md') or 'There is no ledger lesson yet.'
+    story, ledger, meta = snapshot(app.work)
+    status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
+    story = json.dumps(dict(status=status, provenance=meta)) + '\n' + (story or '(empty)')
+    ledger = ledger or 'There is no ledger lesson yet.'
+    measured = json.dumps(context(app.work, SET['run'], ledger), ensure_ascii=False)
     learned = learn(app.work)['text']
-    return '\n\n'.join((MIND.format(budget=budget(float(minutes), end) if minutes else budget('', None), chat_calls=CHAT_CALLS, checkpoint_calls=CHAT_CHECKPOINT_CALLS), 'STORY', story, 'LEDGER', ledger, 'LEARNED', learned, 'BRAIN', brain(sentence), 'TOOLS', *docs, 'SENTENCE', sentence.strip()))
+    return '\n\n'.join((MIND.format(budget=budget(float(minutes), end) if minutes else budget('', None), chat_calls=CHAT_CALLS, checkpoint_calls=CHAT_CHECKPOINT_CALLS), 'STORY', story, 'LEDGER (narrative claims)', ledger, 'MEASURED WHOLE-WAKE EVIDENCE', measured, 'LEARNED', learned, 'BRAIN', brain(sentence), 'TOOLS', *docs, 'SENTENCE', sentence.strip()))
 
 
 def text_of(message):
@@ -72,7 +79,7 @@ def tool_name(event):
     return next((key[:-8] for key in call if str(key).endswith('ToolCall')), 'tool')
 
 
-def spawn(app, model, prompt_path):
+def spawn(app, model, prompt_path, job_name):
     vendor = app.work / 'agent'
     profile = vendor / 'config'
     profile.mkdir(parents=True, exist_ok=True)
@@ -90,63 +97,110 @@ def spawn(app, model, prompt_path):
     env.pop('OPENROUTER_API_KEY', None)
     boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
     argv = [str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '--force', '-p', '--model', model, '--workspace', str(app.work), '--output-format', 'stream-json', str(prompt_path)]
-    return subprocess.Popen(argv, cwd=str(app.work), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=0x08000000)
+    from base import PYTHON
+    return subprocess.Popen([str(PYTHON), '-B', str(CODE / 'job_boot.py'), job_name, *argv], cwd=str(app.work), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x08000000)
 
 
-def read_agent(proc, app, end):
+def read_agent(proc, app, end, stop_grace=60):
     calls = running = 0
     last_say, thought = '', []
     stop_at = None
-    for raw in proc.stdout:
+    result_at = terminal_reason = None
+    inbox = queue.Queue()
+    streams = app.work / 'streams'
+    streams.mkdir(exist_ok=True)
+    stream_path = streams / (uuid.uuid4().hex + '.stream')
+    event('agent_stream', dict(path=str(stream_path)))
+    def pump():
+        try:
+            with open(stream_path, 'wb') as saved:
+                for raw in proc.stdout:
+                    saved.write(raw if isinstance(raw, bytes) else raw.encode('utf-8'))
+                    saved.flush()
+                    inbox.put(raw)
+        except (OSError, ValueError) as error:
+            inbox.put(('error', str(error)))
+        finally:
+            inbox.put(None)
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    def finish(reason, text):
+        if thought:
+            log('think', ''.join(thought))
+        event('chat_end', dict(reason=reason, completed_calls=calls, running_tools=running))
+        if proc.poll() is None:
+            proc.kill()
+        return reason, text
+    while True:
         now = time.time()
         if end and now >= end:
-            proc.kill()
-            return 'ended', last_say
+            return finish('deadline', last_say)
         if (app.work / 'stop').exists():
-            stop_at = stop_at or now + 60
+            stop_at = stop_at or now + stop_grace
             if now >= stop_at:
-                proc.kill()
-                return 'stopped', last_say
-        line = raw.decode('utf-8', 'replace').rstrip('\n')
+                return finish('stopped', last_say)
+        if result_at is not None and now >= result_at + .5:
+            reason = 'failed_agent' if proc.poll() not in (None, 0) else terminal_reason
+            return finish(reason, last_say)
         try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+            raw = inbox.get(timeout=.02)
+        except queue.Empty:
             continue
-        kind, sub = event.get('type'), event.get('subtype')
+        if raw is None:
+            # The pipe may close just before Windows publishes the exit code.
+            try:
+                code = proc.wait(timeout=.05)
+            except subprocess.TimeoutExpired:
+                code = None
+            reason = 'failed_agent' if code not in (None, 0) else (terminal_reason or ('stopped' if stop_at else 'failed_eof'))
+            return finish(reason, last_say)
+        if isinstance(raw, tuple):
+            event('stream_error', raw[1])
+            return finish('failed_stream', last_say)
+        line = raw.decode('utf-8', 'replace').rstrip('\r\n') if isinstance(raw, bytes) else raw.rstrip('\r\n')
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            event('agent_raw', line)
+            continue
+        event('agent', item)
+        if not isinstance(item, dict):
+            continue
+        kind, sub = item.get('type'), item.get('subtype')
         if kind == 'thinking' and sub == 'delta':
-            thought.append(event.get('text') or '')
+            thought.append(item.get('text') or '')
             continue
         if thought:
-            log('think', ''.join(thought)[:3000])
+            log('think', ''.join(thought))
             thought = []
         if kind == 'assistant':
-            said = text_of(event.get('message'))
+            said = text_of(item.get('message'))
             if said:
                 last_say = said
-                log('say', said[:4000])
+                log('say', said)
         elif kind == 'tool_call' and sub == 'started':
             running += 1
-            log('request ' + tool_name(event), '')
+            log('request ' + tool_name(item), json.dumps(item, ensure_ascii=False))
         elif kind == 'tool_call' and sub == 'completed':
             running = max(0, running - 1)
             calls += 1
             if calls >= CHAT_CALLS and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
-                proc.kill()
-                return 'rotate', last_say
+                return finish('rotate', last_say)
         elif kind == 'system' and sub == 'init':
-            log('start', str(event.get('model') or ''))
+            log('start', str(item.get('model') or ''))
         elif kind == 'result':
-            proc.kill()
-            return 'done', last_say or str(event.get('result') or '')
-    if (app.work / 'stop').exists():
-        return 'stopped', last_say
-    return 'done', last_say
+            failed = item.get('is_error') or item.get('error') or str(sub or '').startswith('error')
+            reason = 'failed_agent' if failed else ('stopped' if stop_at else 'completed')
+            last_say = last_say or str(item.get('result') or '')
+            if failed:
+                return finish(reason, last_say)
+            terminal_reason, result_at = reason, now
 
 
 class Mind:
     name, flag = 'mind', 'mind_file'
     doc = '''$CALL --mind-file PATH
-Reads the wake sentence from the file and runs until the stop file appears or the end time passes. The prompt includes story.txt and ledger.md. Multiline tool arguments are files.'''
+Reads the wake sentence from the file. Ends on a model result, failure, stop grace, or deadline; a chat rotates at 42 completed calls when no tools are running. Prompts include story provenance, ledger claims and whole-wake evidence. Multiline tool arguments are files.'''
 
     def run(self, app, path, dry=False, docs_of=None):
         sentence = read_text_file(path)
@@ -166,43 +220,71 @@ def read_text_file(path):
 def drive(app, sentence, minutes, docs_of):
     start = time.time()
     end = start + minutes * 60 if minutes else None
+    SET.update(wake_start=str(start), wake_end=str(end) if end else '')
     (app.work / 'stop').unlink(missing_ok=True)
-    (app.work / 'region.txt').write_text('NONE', encoding='utf-8')
+    atomic(app.work / 'region.txt', 'NONE')
     if sentence:
-        (app.work / 'goal.txt').write_text(sentence, encoding='utf-8')
-    job = None
-    outcome, said = 'ended', ''
+        atomic(app.work / 'goal.txt', sentence)
+    job = proc = None
+    outcome, said = 'failed', ''
+    previous_chat = os.environ.get('TRIDENT_CHAT_ID')
+    chat_index = 0
     try:
+        event('wake_start', dict(start=start, end=end, sentence=sentence, settings=SET.copy()))
         while True:
             if end and time.time() >= end:
-                outcome = 'ended'
+                outcome = 'deadline'
                 break
             if (app.work / 'stop').exists():
                 outcome = 'stopped'
                 break
             prompt_path = app.work / 'prompt.txt'
-            prompt_path.write_text(prompt(app, sentence, minutes, end, docs_of()), encoding='utf-8')
-            proc = spawn(app, brain(sentence), prompt_path)
-            if job is None:
-                job = app.desk.open_job(proc._handle)
-            else:
-                app.desk.assign_job(job, proc._handle)
-            outcome, said = read_agent(proc, app, end)
+            chat_index += 1
+            os.environ['TRIDENT_CHAT_ID'] = f"{SET['run']}:{chat_index}"
+            text = prompt(app, sentence, minutes, end, docs_of())
+            atomic(prompt_path, text)
+            event('chat_prompt', dict(text=text, model=brain(sentence)))
+            job_name = 'Trident-' + uuid.uuid4().hex
+            job = app.desk.open_job(name=job_name)
+            try:
+                proc = spawn(app, brain(sentence), prompt_path, job_name)
+                outcome, said = read_agent(proc, app, end)
+            finally:
+                app.desk.close_job(job)
+                job = None
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
             try:
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+            event('agent_exit', dict(returncode=proc.returncode, reason=outcome))
+            proc.stdout.close()
+            proc = None
             if outcome != 'rotate':
                 break
         report = said or read_text(app.work / 'story.txt')
         if report:
             log('report', report)
-        state = 'stopped' if outcome == 'stopped' or (app.work / 'stop').exists() else 'ended'
-        enter(app.work, current_lesson(app.work), state)
-        return dict(state=state, minutes=round((time.time() - start) / 60, 1))
+        return dict(state=outcome, minutes=round((time.time() - start) / 60, 1))
+    except BaseException as error:
+        outcome = 'failed'
+        event('wake_error', dict(type=type(error).__name__, message=str(error)))
+        raise
     finally:
         app.desk.close_job(job)
+        if proc is not None:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            proc.stdout.close()
+        enter(app.work, current_lesson(app.work), outcome)
+        event('wake_end', dict(reason=outcome, start=start, end=time.time(), usage=usage_summary(app.work / f"run_{SET['run']}.jsonl")))
+        if previous_chat is None:
+            os.environ.pop('TRIDENT_CHAT_ID', None)
+        else:
+            os.environ['TRIDENT_CHAT_ID'] = previous_chat
 
 
 mind = Mind()

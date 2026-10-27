@@ -7,6 +7,8 @@ from desk import Desk, hand
 from eye import eye
 from memory import learn_tool, ledger, recall_tool, stop, story, wipe
 from mind import mind
+from measure import measure
+from state import atomic, locked
 
 
 class Capture:
@@ -39,11 +41,12 @@ or --region LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen. Later captures, the eye, a
         if value != 'NONE':
             parts = value.split(',')
             nums = list(map(int, parts)) if len(parts) == 4 else []
-            if not (len(nums) == 4 and nums[0] < nums[2] <= 1000 and nums[1] < nums[3] <= 1000):
+            if not (len(nums) == 4 and 0 <= nums[0] < nums[2] <= 1000 and 0 <= nums[1] < nums[3] <= 1000):
                 raise Fail('region is NONE or left,top,right,bottom on 0-1000')
         if dry:
             return dict(dry=True, region=value)
-        (app.work / 'region.txt').write_text(value, encoding='utf-8')
+        with locked(app.work / 'capture.lock'):
+            atomic(app.work / 'region.txt', value)
         return dict(region=value)
 
 
@@ -58,8 +61,8 @@ Moves a window from --windows to that 0-1000 box and clears topmost. Capture aft
         return app.desk.place(*values)
 
 
-BUILTIN = [eye, decide, hand, story, ledger, Capture(), Windows(), Region(), Place(), learn_tool, recall_tool, stop, mind]
-BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place'}
+BUILTIN = [eye, decide, hand, story, ledger, Capture(), Windows(), Region(), Place(), learn_tool, recall_tool, stop, mind, measure]
+BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'measure'}
 
 
 class App:
@@ -125,6 +128,7 @@ def main(argv=None):
     parser.add_argument('--shot-delay', default='1.5')
     parser.add_argument('--vision-url', default='http://192.168.16.31:1234')
     parser.add_argument('--vision-model', default='retina')
+    parser.add_argument('--coordinate-mode', choices=('normalized', 'pixels'), default='normalized')
     parser.add_argument('--decide-model', default='typesafe/jev-1.14-20261014')
     parser.add_argument('--mind-model', default='')
     parser.add_argument('--fresh', action='store_true')
@@ -136,6 +140,7 @@ def main(argv=None):
     parser.add_argument('--story-file')
     parser.add_argument('--ledger-file')
     parser.add_argument('--mind-file')
+    parser.add_argument('--measure-file')
     parser.add_argument('--region')
     parser.add_argument('--place', nargs=5)
     for tool in BUILTIN:
@@ -144,7 +149,7 @@ def main(argv=None):
     for name in skills:
         parser.add_argument('--' + name, nargs='*', default=None)
     args = parser.parse_args(argv)
-    configure(args.work, args.run, args.minutes, args.wake_start, args.wake_end, args.shot_delay, args.vision_url, args.vision_model, args.decide_model, args.mind_model)
+    configure(args.work, args.run, args.minutes, args.wake_start, args.wake_end, args.shot_delay, args.vision_url, args.vision_model, args.decide_model, args.mind_model, args.coordinate_mode)
     if args.journal:
         serve_journal()
         return
@@ -161,12 +166,17 @@ def main(argv=None):
     if (app.work / 'stop').exists() and getattr(tool, 'name', '') in BLOCKED:
         raise Fail('stopped')
     started = time.time()
-    if getattr(tool, 'name', None) == 'mind':
-        result = tool.run(app, value, dry=args.dry, docs_of=lambda: docs_of(load_skills()))
-    elif getattr(tool, 'run', None):
-        result = tool.run(app, value, dry=args.dry)
-    else:
-        result = tool(app, *value)
+    try:
+        if getattr(tool, 'name', None) == 'mind':
+            result = tool.run(app, value, dry=args.dry, docs_of=lambda: docs_of(load_skills()))
+        elif getattr(tool, 'run', None):
+            result = tool.run(app, value, dry=args.dry)
+        else:
+            result = tool(app, *value)
+    except Exception as error:
+        from base import event
+        event('component_error', dict(component=getattr(tool, 'name', 'skill'), error=str(error)), seconds=time.time() - started)
+        raise
     if isinstance(result, dict):
         emit(getattr(tool, 'name', 'skill'), result)
     log('exit', f"{getattr(tool, 'name', 'skill')} {time.time() - started:.1f}s ended")
