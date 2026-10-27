@@ -108,10 +108,10 @@ A choice contains only the options in the file.'''
     def ask(self, app, narrative, questions):
         boxed = any(item['type'] == 'box' for item in questions.values())
         from memory import snapshot
-        from evidence import context
+        from evidence import for_prompt
         story, ledger, meta = snapshot(app.work)
         state = ['STORY: ' + story, 'PROVENANCE: ' + json.dumps(meta), 'LEDGER (narrative claims): ' + ledger,
-                 'MEASURED: ' + json.dumps(context(app.work, SET['run'], ledger)), 'WHY: ' + narrative,
+                 'MEASURED: ' + json.dumps(for_prompt(app.work, SET['run'], ledger), ensure_ascii=False), 'WHY: ' + narrative,
                  'GOAL: ' + (app.work / 'goal.txt').read_text(encoding='utf-8') if (app.work / 'goal.txt').exists() else '']
         scale_x = scale_y = 1
         if boxed:

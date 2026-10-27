@@ -5,6 +5,5 @@
 !/skills/**
 !/tests/
 !/tests/*.py
-!/forensic_20261026_124239.md
 __pycache__/
 *.pyc

@@ -253,10 +253,6 @@ class Desk:
         subprocess.run(['powershell.exe', '-NoProfile', '-Command', '[Console]::InputEncoding=[Text.UTF8Encoding]::new(); Set-Clipboard -Value ([Console]::In.ReadToEnd())'], input=str(value).encode(), capture_output=True, check=True, creationflags=0x08000000)
         self.key('ctrl+v')
 
-    def image(self):
-        from eye import load_capture
-        return load_capture(self)[1]
-
     def grab(self):
         width, height = screen_size()
         screen = user32.GetDC(0)

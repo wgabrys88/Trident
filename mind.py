@@ -2,8 +2,8 @@ import json, os, queue, subprocess, threading, time, uuid
 from pathlib import Path
 
 from base import CODE, SET, Fail, event, log
-from memory import current_lesson, enter, learn, snapshot
-from evidence import context, usage_summary
+from memory import current_lesson, enter, snapshot
+from evidence import brief, usage_summary
 from state import atomic
 
 CHAT_CALLS = 42
@@ -13,6 +13,8 @@ DEFAULT = 'grok-4.7-xhigh-fast'
 MIND = '''You are Trident. Your code and your memory are this directory. main.py is the entry point, the other modules are your body, and story.txt and ledger.md are your memory. The sentence at the bottom is the wake.
 
 Look, decide, act, write the story, or edit this directory and add a skill. The next command runs the code as it is on disk.
+
+The sentence is the assignment. Story and ledger are notes from earlier work, not a second assignment. Edit the body or add a skill when the sentence asks for the program. Use the desktop tools only when the sentence asks for the screen. Skip a source file this wake has already read unless the change depends on it.
 
 Call the tools with the commands in the tool list. Multiline text goes in a file. The command receives the path.
 
@@ -59,9 +61,9 @@ def prompt(app, sentence, minutes, end, docs):
     story, ledger, meta = snapshot(app.work)
     status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
     story = json.dumps(dict(status=status, provenance=meta)) + '\n' + (story or '(empty)')
+    packed, learned = brief(app.work, SET['run'], ledger)
     ledger = ledger or 'There is no ledger lesson yet.'
-    measured = json.dumps(context(app.work, SET['run'], ledger), ensure_ascii=False)
-    learned = learn(app.work)['text']
+    measured = json.dumps(packed, ensure_ascii=False)
     return '\n\n'.join((MIND.format(budget=budget(float(minutes), end) if minutes else budget('', None), chat_calls=CHAT_CALLS, checkpoint_calls=CHAT_CHECKPOINT_CALLS), 'STORY', story, 'LEDGER (narrative claims)', ledger, 'MEASURED WHOLE-WAKE EVIDENCE', measured, 'LEARNED', learned, 'BRAIN', brain(sentence), 'TOOLS', *docs, 'SENTENCE', sentence.strip()))
 
 
@@ -72,6 +74,38 @@ def text_of(message):
     if isinstance(content, list):
         return ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
     return '' if content is None else str(content)
+
+
+def compact_agent(item):
+    """Keep the fields evidence counts. The stream file stores the raw line."""
+    if not isinstance(item, dict):
+        return item
+    drop = {'message', 'text', 'tool_call', 'result', 'content'}
+    kept = {}
+    for key, value in item.items():
+        if key in drop:
+            continue
+        if isinstance(value, str):
+            kept[key] = value if len(value) <= 300 else value[:300]
+        elif isinstance(value, (int, float, bool)) or value is None:
+            kept[key] = value
+        elif key == 'usage' and isinstance(value, dict):
+            kept['usage'] = value
+    message = item.get('message')
+    if 'usage' not in kept and isinstance(message, dict) and isinstance(message.get('usage'), dict):
+        kept['usage'] = message['usage']
+    call = item.get('tool_call')
+    if isinstance(call, dict):
+        kept['tool'] = next((str(key)[:-8] for key in call if str(key).endswith('ToolCall')), None)
+    if item.get('type') == 'thinking':
+        kept['chars'] = len(item.get('text') or '')
+    elif item.get('type') == 'assistant':
+        kept['chars'] = len(text_of(message))
+    elif item.get('type') == 'result':
+        kept['chars'] = len(str(item.get('result') or ''))
+    elif item.get('type') == 'user':
+        kept['chars'] = len(text_of(message) if isinstance(message, dict) else str(message or ''))
+    return kept
 
 
 def tool_name(event):
@@ -163,7 +197,7 @@ def read_agent(proc, app, end, stop_grace=60):
         except json.JSONDecodeError:
             event('agent_raw', line)
             continue
-        event('agent', item)
+        event('agent', compact_agent(item))
         if not isinstance(item, dict):
             continue
         kind, sub = item.get('type'), item.get('subtype')

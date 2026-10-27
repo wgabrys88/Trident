@@ -91,11 +91,16 @@ def load_skills():
 
 def docs_of(skills):
     listed = []
-    prefix = command()
+    prefix = command() + '\nEach tool below is that same command plus the flag on its first line.\n'
+    first = True
     for tool in BUILTIN:
-        listed.append(tool.doc.replace('$CALL', prefix))
+        text = tool.doc.replace('$CALL ', '')
+        if first:
+            text = prefix + text
+            first = False
+        listed.append(text)
     for name, fn in skills.items():
-        text = (fn.__doc__ or f'$CALL --{name}\nRuns the skill.').replace('$CALL', prefix)
+        text = (fn.__doc__ or f'$CALL --{name}\nRuns the skill.').replace('$CALL ', '')
         listed.append(text)
     return listed
 

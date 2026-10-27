@@ -306,6 +306,42 @@ class BodyTests(BodyCase):
         self.assertIn('20 percent', second)
         self.assertRegex(mind.budget(20, time.time()), r'\d\d:\d\d:\d\d')
 
+    def test_prompt_hides_capture_ids_and_counts_markdown_errors(self):
+        (self.work / 'run_old.md').write_text('## 10:00:00 err note\n\nLooked only.\n', encoding='utf-8')
+        (self.work / 'run_past.jsonl').write_text('\n'.join((
+            json.dumps(dict(kind='component', component='hands', at=1, payload=dict(id='secret-capture-id', action_id='secret-action-id'))),
+            json.dumps(dict(kind='capture_saved', at=2, payload=dict(id='secret-capture-id'))),
+        )) + '\n', encoding='utf-8')
+        (self.work / 'ledger.md').write_text('## wake past date\nNo capture was taken.\n', encoding='utf-8')
+        calls = []
+        real = evidence.measured
+        def wrapped(path):
+            calls.append(str(Path(path)))
+            return real(path)
+        evidence.measured = wrapped
+        try:
+            text = mind.prompt(self.app, 'Evolve the code.', 40, time.time() + 600, ())
+        finally:
+            evidence.measured = real
+        self.assertEqual(len(calls), len(set(calls)))
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertNotIn('secret-capture-id', text)
+        self.assertNotIn('secret-action-id', text)
+        self.assertNotIn('"capture_ids"', text)
+        self.assertNotIn('"action_ids"', text)
+        self.assertIn('"captures": 1', text)
+        self.assertIn('"actions": 1', text)
+        self.assertIn('capture records exist', text)
+        self.assertIn('The sentence is the assignment.', text)
+        self.assertIn('2 earlier wakes, 1 recorded errors, 1 component actions', text)
+        kept = evidence.context(self.work, 'test', (self.work / 'ledger.md').read_text(encoding='utf-8'))
+        listed = next(row for row in kept['historical'] if row['run'] == 'past')
+        self.assertEqual(listed['capture_ids'], ['secret-capture-id'])
+        self.assertEqual(listed['action_ids'], ['secret-action-id'])
+        self.assertEqual(listed['head_errors'], 0)
+        self.assertEqual(memory.learn(self.work)['errors'], 1)
+        self.assertNotIn('capture_ids', memory.learn(self.work))
+
     def test_measured_whole_wake_and_conflicts(self):
         past = self.work / 'run_past.md'
         past.write_text('## 10:00:00 windows\n\n{}\n\n## 10:01:00 capture\n\n{"id":"a"}\n\n## 10:01:01 capture\n\n{"id":"b"}\n')
@@ -340,11 +376,28 @@ class BodyTests(BodyCase):
         self.assertIn('test:1', summary['chats'])
         self.assertIsNone(summary['tokens'])
 
+    def test_agent_journal_keeps_counts_not_tool_bodies(self):
+        bulky = 'SECRET' * 50
+        item = dict(type='tool_call', subtype='completed', call_id='abc', tool_call=dict(readToolCall=dict(result=dict(content=bulky))), usage=dict(total_tokens=3), model='grok')
+        slim = mind.compact_agent(item)
+        self.assertEqual((slim['type'], slim['subtype'], slim['tool'], slim['call_id'], slim['model']), ('tool_call', 'completed', 'read', 'abc', 'grok'))
+        self.assertEqual(slim['usage']['total_tokens'], 3)
+        self.assertNotIn('SECRET', json.dumps(slim))
+        nested = mind.compact_agent(dict(type='assistant', message=dict(content=bulky, usage=dict(total_tokens=9))))
+        self.assertEqual(nested['usage']['total_tokens'], 9)
+        self.assertEqual(nested['chars'], len(bulky))
+        self.assertNotIn('SECRET', json.dumps(nested))
+        thought = mind.compact_agent(dict(type='thinking', subtype='delta', text=bulky, timestamp_ms=5))
+        self.assertEqual((thought['chars'], thought['timestamp_ms']), (len(bulky), 5))
+        self.assertNotIn('SECRET', json.dumps(thought))
+
     def test_measured_original_history_contradictions(self):
-        # Read-only fixture: existing journals are not opened as SQLite or edited.
-        ledger = (ROOT / 'ledger.md').read_text(encoding='utf-8') if (ROOT / 'ledger.md').exists() else ''
-        if not ledger:
-            self.skipTest('historical fixture is intentionally not published')
+        # Live work-tree journals are optional. Synthetic tests cover the mechanism.
+        journals = [path for path in list(ROOT.glob('run_*.md')) + list(ROOT.glob('run_*.jsonl')) if '133306' not in path.name]
+        ledger_path = ROOT / 'ledger.md'
+        if not ledger_path.exists() or not journals:
+            self.skipTest('historical journals are workspace evidence, not part of the body')
+        ledger = ledger_path.read_text(encoding='utf-8')
         result = evidence.context(ROOT, 'test-not-a-wake', ledger)
         claims = result['contradictions']
         self.assertEqual(len(claims), 3)
@@ -356,6 +409,8 @@ class BodyTests(BodyCase):
         docs = main.docs_of({})
         text = '\n'.join(docs)
         self.assertEqual(len(docs), 14)
+        self.assertEqual(text.count('main.py'), 1)
+        self.assertIn('same command plus the flag', text)
         self.assertIn('fara ACTION_ID', text)
         self.assertIn('not a security boundary', text)
         self.assertNotIn('improvise', text.lower())
@@ -363,6 +418,12 @@ class BodyTests(BodyCase):
         self.assertIn('do not request a box or attach a screenshot', text)
         self.assertIn('Ordinary source-file reads and nonvisual', mind.MIND)
         self.assertEqual((mind.CHAT_CALLS, mind.CHAT_CHECKPOINT_CALLS, mind.DEFAULT), (42, 9, 'grok-4.7-xhigh-fast'))
+        skills = main.load_skills()
+        self.assertIn('map', skills)
+        listed = skills['map'](self.app)
+        self.assertIn('evidence.py', [row['file'] for row in listed['modules']])
+        self.assertIn('map', listed['tools'])
+        self.assertNotIn('secret-capture-id', json.dumps(listed))
 
     def test_measure_action_refs(self):
         first = self.receipt(point=[0, 0])

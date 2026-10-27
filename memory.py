@@ -29,11 +29,11 @@ def digest(path):
     heads = HEAD.findall(text)
     reports = [body.strip() for body in REPORT.findall(text)]
     final = reports[-1][:800] if reports else ''
-    from evidence import measured
+    from evidence import error_count, measured
     counts = measured(path)
     return dict(run=path.stem, span=[heads[0][0], heads[-1][0]] if heads else [], calls=counts['component_actions'],
                 harness_calls=counts['harness_calls'], harness_count_basis=counts['harness_count_basis'],
-                capture_ids=counts['capture_ids'], errors=counts['recorded_errors'] if counts['recorded_errors'] is not None else sum(kind == 'err' for _stamp, kind, _name in heads), final=final)
+                capture_ids=counts['capture_ids'], errors=error_count(counts), final=final)
 
 
 def recall(work):
@@ -41,17 +41,13 @@ def recall(work):
 
 
 def learn(work):
-    rows = [digest(path) for path in journals(work)][-5:]
-    calls, errors = {}, 0
-    for row in rows:
-        errors += row['errors']
-        for key, value in row['calls'].items():
-            calls[key] = calls.get(key, 0) + value
+    """Counts from the measured cache. It does not reread journal prose or copy capture ids."""
+    from evidence import measured, tally
+    rows = [measured(path) for path in journals(work)][-5:]
     ledger = Path(work) / 'ledger.md'
     with locked(Path(work) / 'memory.lock'):
-        advice = 'Start from the newest ledger line as a narrative claim; compare measured evidence.' if ledger.exists() and ledger.read_text(encoding='utf-8').strip() else 'There is no ledger lesson yet.'
-    return dict(wakes=len(rows), errors=errors, calls=calls, harness_calls=sum(row['harness_calls'] for row in rows),
-                text=f'{len(rows)} earlier wakes, {errors} recorded errors, {sum(calls.values())} component actions (harness calls separate). {advice}')
+        text = ledger.read_text(encoding='utf-8') if ledger.exists() else ''
+    return tally(rows, text)
 
 
 def _parts(work):
