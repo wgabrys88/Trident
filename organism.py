@@ -1,0 +1,992 @@
+import argparse, base64, ctypes, hashlib, json, math, os, queue, re, socket, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
+from contextlib import contextmanager
+from ctypes import wintypes as W
+from pathlib import Path
+CODE = Path(__file__).resolve().parent
+PYTHON = Path(sys.executable)
+NORM, PORT = 1000, 8765
+SET, RUN = {}, None
+HEAD = re.compile(r'(?m)^## (\d\d:\d\d:\d\d) (\S+)(?:[ \t]+([^\n]*))?$')
+WAKE = re.compile(r'(?m)^## wake ')
+COMPONENTS = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'story', 'ledger', 'stop', 'measure', 'map'}
+BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'measure'}
+BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
+ACTIONS = ('left_click', 'right_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'key', 'type', 'scroll', 'hscroll', 'wait', 'terminate')
+POINTER = ACTIONS[:6]
+ALIASES = {'arrowup': 'up', 'arrowdown': 'down', 'arrowleft': 'left', 'arrowright': 'right', 'super': 'win'}
+SRCCOPY, CAPTUREBLT, HALFTONE = 0x00CC0020, 0x40000000, 4
+MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0800, 0x1000, 0x8000
+KEYUP, EXTENDED = 0x0002, 0x0001
+EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
+VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
+MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt and ledger.md are memory. The run markdown is the record. The sentence at the bottom is the only assignment.
+See the desktop through the eye, one request at a time. Name the window and the target. Ask whether it is visible before a click. Copy a returned fara id unchanged. Do not invent a point. After a hand, ask what changed.
+This chat rotates after 42 completed tool calls. After 35, write the story and replace this wake's ledger lesson, then continue. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
+On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
+DOCS = (
+'--eye-file PATH. One eye request. An observation returns text. An action returns one line: fara ACTION_ID.',
+'--hands-file PATH. Exactly one copied line, fara ACTION_ID. The body rechecks the target, waits, and captures again.',
+'--story-file PATH. Replace story.txt. The next prompt includes it.',
+'--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
+'--capture. Write shots/<id>.png and screen.json. Read the picture with the eye.',
+'--windows. List titled windows. A minimized window has box null.',
+'--region NONE or LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen.',
+'--place HWND LEFT TOP RIGHT BOTTOM. Move a window only when the sentence asks.',
+'--learn. Count headings in up to five earlier run markdown files.',
+'--stop. Write the stop file. The mind gets up to 60 seconds, or less if the deadline is sooner.',
+'--mind-file PATH. Run the sentence until a result, failure, stop, or deadline.',
+'--map. Print the line count, the vision server, and the tool flags.',
+)
+class Fail(Exception):
+    pass
+def bind(name, table):
+    dll = ctypes.WinDLL(name, use_last_error=True)
+    for function, restype, *argtypes in table:
+        getattr(dll, function).restype, getattr(dll, function).argtypes = restype, argtypes
+    return dll
+INT, PTR = W.INT, ctypes.POINTER
+user32 = bind('user32', [('GetDC', W.HDC, W.HWND), ('ReleaseDC', INT, W.HWND, W.HDC), ('GetSystemMetrics', INT, INT), ('GetCursorPos', W.BOOL, PTR(W.POINT)), ('SendInput', ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, INT), ('VkKeyScanW', ctypes.c_short, W.WCHAR), ('EnumWindows', W.BOOL, ctypes.c_void_p, W.LPARAM), ('GetForegroundWindow', W.HWND), ('GetWindowTextW', INT, W.HWND, W.LPWSTR, INT), ('GetWindowTextLengthW', INT, W.HWND), ('IsWindowVisible', W.BOOL, W.HWND), ('IsIconic', W.BOOL, W.HWND), ('GetWindowRect', W.BOOL, W.HWND, PTR(W.RECT)), ('GetWindowThreadProcessId', W.DWORD, W.HWND, PTR(W.DWORD)), ('GetWindowLongW', W.LONG, W.HWND, INT), ('ShowWindow', W.BOOL, W.HWND, INT), ('SetWindowPos', W.BOOL, W.HWND, ctypes.c_void_p, INT, INT, INT, INT, W.UINT)])
+gdi32 = bind('gdi32', [('CreateCompatibleDC', W.HDC, W.HDC), ('CreateDIBSection', W.HBITMAP, W.HDC, ctypes.c_void_p, W.UINT, PTR(ctypes.c_void_p), W.HANDLE, W.DWORD), ('SelectObject', W.HGDIOBJ, W.HDC, W.HGDIOBJ), ('DeleteObject', W.BOOL, W.HGDIOBJ), ('DeleteDC', W.BOOL, W.HDC), ('BitBlt', W.BOOL, W.HDC, INT, INT, INT, INT, W.HDC, INT, INT, W.DWORD), ('StretchBlt', W.BOOL, W.HDC, INT, INT, INT, INT, W.HDC, INT, INT, INT, INT, W.DWORD), ('SetStretchBltMode', INT, W.HDC, INT), ('SetBrushOrgEx', W.BOOL, W.HDC, INT, INT, ctypes.c_void_p)])
+kernel32 = bind('kernel32', [('CreateJobObjectW', W.HANDLE, W.LPVOID, W.LPCWSTR), ('OpenJobObjectW', W.HANDLE, W.DWORD, W.BOOL, W.LPCWSTR), ('SetInformationJobObject', W.BOOL, W.HANDLE, INT, W.LPVOID, W.DWORD), ('AssignProcessToJobObject', W.BOOL, W.HANDLE, W.HANDLE), ('CloseHandle', W.BOOL, W.HANDLE), ('GetCurrentProcess', W.HANDLE)])
+dwmapi = bind('dwmapi', [('DwmGetWindowAttribute', ctypes.c_long, W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD)])
+try:
+    ctypes.WinDLL('shcore').SetProcessDpiAwareness(2)
+except OSError:
+    pass
+class BitmapInfoHeader(ctypes.Structure):
+    _fields_ = [('biSize', W.DWORD), ('biWidth', W.LONG), ('biHeight', W.LONG), ('biPlanes', W.WORD), ('biBitCount', W.WORD), ('biCompression', W.DWORD), ('biSizeImage', W.DWORD), ('biXPelsPerMeter', W.LONG), ('biYPelsPerMeter', W.LONG), ('biClrUsed', W.DWORD), ('biClrImportant', W.DWORD)]
+class MouseInput(ctypes.Structure):
+    _fields_ = [('dx', ctypes.c_long), ('dy', ctypes.c_long), ('mouseData', ctypes.c_uint), ('dwFlags', ctypes.c_uint), ('time', ctypes.c_uint), ('dwExtraInfo', ctypes.c_ulonglong)]
+class KeyboardInput(ctypes.Structure):
+    _fields_ = [('wVk', W.WORD), ('wScan', W.WORD), ('dwFlags', W.DWORD), ('time', W.DWORD), ('dwExtraInfo', ctypes.c_ulonglong)]
+class InputData(ctypes.Union):
+    _fields_ = [('mi', MouseInput), ('ki', KeyboardInput)]
+class Input(ctypes.Structure):
+    _anonymous_ = ('data',)
+    _fields_ = [('type', ctypes.c_uint), ('data', InputData)]
+class JobBasicLimits(ctypes.Structure):
+    _fields_ = [('PerProcessUserTimeLimit', ctypes.c_int64), ('PerJobUserTimeLimit', ctypes.c_int64), ('LimitFlags', W.DWORD), ('MinimumWorkingSetSize', ctypes.c_size_t), ('MaximumWorkingSetSize', ctypes.c_size_t), ('ActiveProcessLimit', W.DWORD), ('Affinity', ctypes.c_size_t), ('PriorityClass', W.DWORD), ('SchedulingClass', W.DWORD)]
+class JobLimits(ctypes.Structure):
+    _fields_ = [('BasicLimitInformation', JobBasicLimits), ('IoInfo', ctypes.c_uint64 * 6), ('ProcessMemoryLimit', ctypes.c_size_t), ('JobMemoryLimit', ctypes.c_size_t), ('PeakProcessMemoryUsed', ctypes.c_size_t), ('PeakJobMemoryUsed', ctypes.c_size_t)]
+def boot(name, argv):
+    handle = kernel32.OpenJobObjectW(0x0001, False, name)
+    if not handle:
+        raise RuntimeError('bootstrap could not open job; vendor was not launched')
+    try:
+        if not kernel32.AssignProcessToJobObject(handle, kernel32.GetCurrentProcess()):
+            raise RuntimeError('bootstrap could not join job; vendor was not launched')
+    finally:
+        kernel32.CloseHandle(handle)
+    return subprocess.call(argv, stdin=subprocess.DEVNULL, creationflags=0x08000000 if os.name == 'nt' else 0)
+@contextmanager
+def locked(path):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(path, 'a+b')
+    handle.seek(0, 2)
+    if handle.tell() == 0:
+        handle.write(b'\0')
+        handle.flush()
+    handle.seek(0)
+    import msvcrt
+    while True:
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            break
+        except OSError:
+            time.sleep(.01)
+    try:
+        yield handle
+    finally:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        handle.close()
+def atomic(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with open(temp, 'wb') as handle:
+            handle.write(value if isinstance(value, bytes) else value.encode('utf-8'))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+def json_file(path, value):
+    atomic(path, json.dumps(value, ensure_ascii=False, allow_nan=False))
+def read_file(path):
+    file = Path(path)
+    if not file.is_file():
+        raise Fail(f'not a file: {path}')
+    return file.read_text(encoding='utf-8-sig')
+def configure(work, run, minutes='', wake_start='', wake_end='', shot_delay='1.5', vision_url='http://192.168.16.31:1234', vision_model='retina', decide_model='typesafe/jev-1.14-20261014', mind_model='', coordinate_mode='normalized'):
+    global RUN
+    SET.clear()
+    SET.update(work=str(Path(work).resolve()), run=run or time.strftime('%Y%m%d_%H%M%S'), minutes=str(minutes or ''), wake_start=str(wake_start or ''), wake_end=str(wake_end or ''), shot_delay=str(shot_delay or '1.5'), vision_url=str(vision_url).rstrip('/'), vision_model=vision_model, decide_model=decide_model, mind_model=mind_model or '', coordinate_mode=coordinate_mode)
+    RUN = Path(SET['work']) / f"run_{SET['run']}.md"
+def clock():
+    if not SET.get('wake_start'):
+        return {'clock': {'used_seconds': None, 'remaining_seconds': None, 'timing': 'unknown'}}
+    now, start = time.time(), float(SET['wake_start'])
+    body = {'now': time.strftime('%H:%M:%S'), 'used': f'{(now - start) / 60:.1f} min', 'used_seconds': round(now - start, 3), 'remaining_seconds': None}
+    if SET.get('wake_end'):
+        body['left'] = f'{(float(SET["wake_end"]) - now) / 60:.1f} min'
+        body['remaining_seconds'] = round(float(SET['wake_end']) - now, 3)
+        body['deadline'] = time.strftime('%H:%M:%S', time.localtime(float(SET['wake_end'])))
+    return {'clock': body}
+def command():
+    bits = ["'" + str(PYTHON).replace("'", "''") + "'", "'" + str(CODE / 'main.py').replace("'", "''") + "'", '--work', "'" + SET['work'].replace("'", "''") + "'", '--run', "'" + str(SET['run']).replace("'", "''") + "'"]
+    for key in ('minutes', 'wake_start', 'wake_end', 'shot_delay', 'vision_url', 'vision_model', 'decide_model', 'mind_model', 'coordinate_mode'):
+        if SET.get(key):
+            bits += ['--' + key.replace('_', '-'), "'" + str(SET[key]).replace("'", "''") + "'"]
+    return '& ' + ' '.join(bits)
+def journal_ready():
+    try:
+        with socket.create_connection(('127.0.0.1', PORT), 0.2):
+            pass
+    except OSError:
+        return False
+    try:
+        with urllib.request.urlopen(f'http://127.0.0.1:{PORT}/identity', timeout=.5) as response:
+            return json.load(response).get('service') == 'trident-journal'
+    except (OSError, ValueError):
+        return None
+def point_journal():
+    atomic(CODE / 'journal.path', str(RUN))
+    legacy = CODE / 'v2' / 'journal.path'
+    if legacy.exists():
+        atomic(legacy, str(RUN))
+def ensure_journal():
+    if SET.get('dry') or os.environ.get('TRIDENT_JOURNAL') == '1':
+        return
+    state = journal_ready()
+    if state is True:
+        return
+    if state is None:
+        raise Fail(f'port {PORT} belongs to an unrelated listener')
+    subprocess.Popen([str(PYTHON), '-B', str(CODE / 'main.py'), '--journal', '--work', SET['work'], '--run', SET['run']], cwd=SET['work'], env=os.environ | {'TRIDENT_JOURNAL': '1'}, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x08000000)
+def clip(text, limit):
+    text = ' '.join(str(text or '').split())
+    return text if len(text) <= limit else text[:limit] + '...'
+def heading(kind, text='', limit=360):
+    if SET.get('dry') or RUN is None:
+        return
+    if os.environ.get('TRIDENT_JOURNAL') != '1':
+        try:
+            point_journal()
+            ensure_journal()
+        except (OSError, Fail) as error:
+            print(str(error), file=sys.stderr)
+    body = clip(text, limit)
+    block = f"## {time.strftime('%H:%M:%S')} {kind}\n\n{body}\n\n" if body else f"## {time.strftime('%H:%M:%S')} {kind}\n\n"
+    RUN.parent.mkdir(parents=True, exist_ok=True)
+    with locked(RUN.with_suffix('.lock')):
+        with open(RUN, 'a', encoding='utf-8') as handle:
+            handle.write(block)
+def brief_result(kind, body):
+    if kind == 'windows':
+        rows = body.get('windows') or []
+        return f"count={len(rows)} " + '; '.join(f"{row.get('hwnd')}|{row.get('title')}|{row.get('box')}" for row in rows[:12])
+    if kind in ('capture', 'hands'):
+        return f"id={body.get('id')} size={body.get('size')} cursor={body.get('cursor')}"
+    if kind == 'eye':
+        return f"action={body.get('action')} program={body.get('program')} answer={body.get('answer')}"
+    if kind == 'map':
+        return f"organism_lines={body.get('organism_lines')} total_python_lines={body.get('total_python_lines')} under_1000={body.get('under_1000')} vision={body.get('vision')}"
+    return json.dumps({key: value for key, value in body.items() if key != 'clock'}, ensure_ascii=False)
+def emit(kind, payload):
+    body = dict(payload)
+    body.update(clock())
+    limit = 2000 if kind == 'windows' else 500
+    line = clip(brief_result(kind, body), limit)
+    heading(kind, line, limit)
+    print(line, flush=True)
+    return body
+def serve_journal():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    page = b'<!DOCTYPE html><meta charset=utf-8><title>trident</title><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font:14px monospace"></pre><script>var t=document.getElementById("t"),es=new EventSource("/events");function z(){scrollTo(0,1e9)}es.addEventListener("reset",function(e){t.textContent=e.data;z()});es.addEventListener("more",function(e){t.textContent+=e.data;z()})</script>'
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            return
+        def _send(self, code, ctype, body=b'', stream=False):
+            self.send_response(code)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            if body and not stream:
+                self.wfile.write(body)
+        def _event(self, name, payload):
+            lines = payload.decode('utf-8', 'replace').split('\n')
+            self.wfile.write(('event: ' + name + '\n' + ''.join(f'data: {line}\n' for line in lines) + '\n').encode())
+            self.wfile.flush()
+        def _target(self):
+            pointer = CODE / 'journal.path'
+            if pointer.exists() and pointer.read_text(encoding='utf-8').strip():
+                return Path(pointer.read_text(encoding='utf-8').strip())
+            return RUN
+        def do_GET(self):
+            path = self.path.split('?', 1)[0]
+            if path == '/identity':
+                self._send(200, 'application/json', json.dumps({'service': 'trident-journal', 'code': str(CODE)}).encode())
+                return
+            target = self._target()
+            if path == '/md':
+                self._send(200, 'text/plain; charset=utf-8', target.read_bytes() if target and target.exists() else b'')
+                return
+            if path == '/events':
+                self._send(200, 'text/event-stream; charset=utf-8', stream=True)
+                seen = current = None
+                try:
+                    while True:
+                        target = self._target()
+                        data = target.read_bytes() if target and target.exists() else b''
+                        key = str(target)
+                        if key != current or seen is None or len(data) < seen:
+                            current, seen = key, len(data)
+                            self._event('reset', data)
+                        elif len(data) > seen:
+                            self._event('more', data[seen:])
+                            seen = len(data)
+                        time.sleep(0.4)
+                except OSError:
+                    return
+            if path in ('/', '/index.html'):
+                self._send(200, 'text/html; charset=utf-8', page)
+                return
+            self.send_error(404)
+    ThreadingHTTPServer.allow_reuse_address = True
+    ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+def screen_size():
+    return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+def deliver(packet):
+    if user32.SendInput(1, ctypes.byref(packet), ctypes.sizeof(packet)) != 1:
+        raise Fail(f'SendInput did not deliver input (Win32 error {ctypes.get_last_error()})')
+def send(flags, px=0, py=0, data=0, absolute=False):
+    width, height = screen_size()
+    packet = Input()
+    packet.type = 0
+    packet.mi = MouseInput(int(px * 65535 / max(1, width - 1)) if absolute else 0, int(py * 65535 / max(1, height - 1)) if absolute else 0, int(data) & 0xFFFFFFFF, flags | (ABSOLUTE if absolute else 0))
+    deliver(packet)
+def swap_red_blue(pixels):
+    out = bytearray(pixels)
+    count = len(pixels) // 4
+    out[0::4], out[2::4], out[3::4] = pixels[2::4], pixels[0::4], b'\xff' * count
+    return bytes(out)
+def png(image):
+    pixels, width, height = image
+    rgba, stride = swap_red_blue(pixels), width * 4
+    rows = b''.join(b'\0' + rgba[y * stride:(y + 1) * stride] for y in range(height))
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(rows, 6)) + chunk(b'IEND', b'')
+def unpng(data):
+    (width, height), (size,) = struct.unpack('>II', data[16:24]), struct.unpack('>I', data[33:37])
+    rows, stride = zlib.decompress(data[41:41 + size]), width * 4 + 1
+    return swap_red_blue(b''.join(rows[y * stride + 1:(y + 1) * stride] for y in range(height))), width, height
+class Desk:
+    def __init__(self, work):
+        self.work = Path(work)
+    def region(self):
+        path = self.work / 'region.txt'
+        raw = path.read_text(encoding='utf-8').strip() if path.exists() else 'NONE'
+        return raw or 'NONE'
+    def _box(self):
+        if getattr(self, 'action_box', None) is not None:
+            return tuple(self.action_box)
+        raw, (width, height) = self.region(), screen_size()
+        box = (0, 0, NORM, NORM) if raw == 'NONE' else tuple(int(part) for part in raw.split(','))
+        return [(v * (height if i % 2 else width) + NORM // 2) // NORM for i, v in enumerate(box)]
+    def point(self, x, y):
+        x1, y1, x2, y2 = self._box()
+        return x1 + round(max(0, min(NORM, float(x))) * (x2 - x1 - 1) / NORM), y1 + round(max(0, min(NORM, float(y))) * (y2 - y1 - 1) / NORM)
+    def cursor_pixel(self):
+        at = W.POINT()
+        if not user32.GetCursorPos(ctypes.byref(at)):
+            raise Fail('cannot read the cursor')
+        return [at.x, at.y]
+    def move(self, x, y):
+        send(MOVE, *self.point(x, y), absolute=True)
+        time.sleep(0.03)
+    def click(self, x, y, right=False, times=1):
+        px, py = self.point(x, y)
+        send(MOVE, px, py, absolute=True)
+        time.sleep(0.03)
+        down, up = (RIGHT_DOWN, RIGHT_UP) if right else (LEFT_DOWN, LEFT_UP)
+        for _ in range(max(1, times)):
+            try:
+                send(down, px, py, absolute=True)
+                time.sleep(0.03)
+            finally:
+                send(up, px, py, absolute=True)
+            time.sleep(0.05 if times > 1 else 0)
+    def drag(self, points):
+        if len(points) < 2:
+            raise Fail('drag needs two points')
+        pixels = [self.point(x, y) for x, y in points]
+        send(LEFT_UP)
+        send(MOVE, *pixels[0], absolute=True)
+        time.sleep(0.03)
+        try:
+            send(LEFT_DOWN, *pixels[0], absolute=True)
+            time.sleep(0.03)
+            for (x0, y0), (x1, y1) in zip(pixels, pixels[1:]):
+                for step in range(1, 13):
+                    send(MOVE, x0 + (x1 - x0) * step // 12, y0 + (y1 - y0) * step // 12, absolute=True)
+                    time.sleep(0.012)
+        finally:
+            send(LEFT_UP)
+    def wheel(self, amount, horizontal=False):
+        if amount:
+            send(HWHEEL if horizontal else WHEEL, data=int(amount))
+    def _key(self, vk, up=False):
+        packet = Input()
+        packet.type = 1
+        packet.ki = KeyboardInput(vk, 0, (KEYUP if up else 0) | (EXTENDED if vk in EXTENDED_VKS else 0), 0, 0)
+        deliver(packet)
+    def key(self, combo):
+        names = [part.strip().lower() for part in str(combo).replace(',', '+').replace(' ', '+').split('+') if part.strip()]
+        if not names:
+            raise Fail(f'no key in {combo!r}')
+        codes = []
+        for name in names:
+            if name in VK:
+                codes.append(VK[name])
+            elif len(name) == 1:
+                code = user32.VkKeyScanW(name)
+                if code == -1:
+                    raise Fail(f'unmappable character: {name!r}')
+                codes.append(code & 0xFF)
+            else:
+                raise Fail(f'unknown key: {name}')
+        held = []
+        try:
+            for vk in codes:
+                held.append(vk)
+                self._key(vk)
+                time.sleep(0.02)
+        finally:
+            for vk in reversed(held):
+                self._key(vk, up=True)
+    def type_text(self, value):
+        subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Set-Clipboard -Value ([Console]::In.ReadToEnd())'], input=str(value).encode(), capture_output=True, check=True, creationflags=0x08000000)
+        self.key('ctrl+v')
+    def grab(self):
+        width, height = screen_size()
+        screen = user32.GetDC(0)
+        try:
+            header, bits = BitmapInfoHeader(ctypes.sizeof(BitmapInfoHeader), width, -height, 1, 32), ctypes.c_void_p()
+            bitmap, dc = gdi32.CreateDIBSection(screen, ctypes.byref(header), 0, ctypes.byref(bits), None, 0), gdi32.CreateCompatibleDC(screen)
+            try:
+                gdi32.SelectObject(dc, bitmap)
+                if not gdi32.BitBlt(dc, 0, 0, width, height, screen, 0, 0, SRCCOPY | CAPTUREBLT):
+                    raise Fail('capture failed')
+                return ctypes.string_at(bits, width * height * 4), width, height
+            finally:
+                gdi32.DeleteDC(dc)
+                gdi32.DeleteObject(bitmap)
+        finally:
+            user32.ReleaseDC(0, screen)
+    def stretch(self, image, box, width, height):
+        pixels, source_width, source_height = image
+        x1, y1, x2, y2 = box
+        screen = user32.GetDC(0)
+        try:
+            source_header, source_bits = BitmapInfoHeader(ctypes.sizeof(BitmapInfoHeader), source_width, -source_height, 1, 32), ctypes.c_void_p()
+            source_bitmap, source = gdi32.CreateDIBSection(screen, ctypes.byref(source_header), 0, ctypes.byref(source_bits), None, 0), gdi32.CreateCompatibleDC(screen)
+            header, bits = BitmapInfoHeader(ctypes.sizeof(BitmapInfoHeader), width, -height, 1, 32), ctypes.c_void_p()
+            bitmap, dc = gdi32.CreateDIBSection(screen, ctypes.byref(header), 0, ctypes.byref(bits), None, 0), gdi32.CreateCompatibleDC(screen)
+            try:
+                gdi32.SelectObject(source, source_bitmap)
+                ctypes.memmove(source_bits, pixels, len(pixels))
+                gdi32.SelectObject(dc, bitmap)
+                gdi32.SetStretchBltMode(dc, HALFTONE)
+                gdi32.SetBrushOrgEx(dc, 0, 0, None)
+                gdi32.StretchBlt(dc, 0, 0, width, height, source, x1, y1, max(1, x2 - x1), max(1, y2 - y1), SRCCOPY)
+                return ctypes.string_at(bits, width * height * 4), width, height
+            finally:
+                gdi32.DeleteDC(dc)
+                gdi32.DeleteObject(bitmap)
+                gdi32.DeleteDC(source)
+                gdi32.DeleteObject(source_bitmap)
+        finally:
+            user32.ReleaseDC(0, screen)
+    def windows(self):
+        found, front, (width, height) = [], user32.GetForegroundWindow(), screen_size()
+        @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+        def visit(hwnd, _):
+            cloaked, length = W.DWORD(), user32.GetWindowTextLengthW(hwnd)
+            dwmapi.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+            if user32.IsWindowVisible(hwnd) and not cloaked.value and length:
+                title, rect, pid = ctypes.create_unicode_buffer(length + 1), W.RECT(), W.DWORD()
+                user32.GetWindowTextW(hwnd, title, length + 1)
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                minimized = bool(user32.IsIconic(hwnd))
+                box = None if minimized else [rect.left * NORM // width, rect.top * NORM // height, rect.right * NORM // width, rect.bottom * NORM // height]
+                found.append({'hwnd': int(hwnd), 'title': title.value, 'box': box, 'pixel_box': None if minimized else [rect.left, rect.top, rect.right, rect.bottom], 'pid': int(pid.value), 'minimized': minimized, 'topmost': bool(user32.GetWindowLongW(hwnd, -20) & 8), 'foreground': hwnd == front})
+            return True
+        user32.EnumWindows(visit, 0)
+        return found
+    def capture(self):
+        with locked(self.work / 'capture.lock'):
+            region, size, windows = self.region(), list(screen_size()), self.windows()
+            x1, y1, x2, y2 = self._box()
+            image = self.stretch(self.grab(), (x1, y1, x2, y2), max(1, x2 - x1), max(1, y2 - y1))
+            if region != self.region() or size != list(screen_size()) or windows != self.windows():
+                raise Fail('desktop geometry changed during capture')
+            shots = self.work / 'shots'
+            shots.mkdir(exist_ok=True)
+            sid = time.strftime('%H%M%S') + '-' + uuid.uuid4().hex
+            data = png(image)
+            atomic(shots / f'{sid}.png', data)
+            body = {'id': sid, 'image': str(shots / f'{sid}.png'), 'size': list(image[1:]), 'region': region, 'box': [x1, y1, x2, y2], 'screen_size': size, 'windows': windows, 'cursor_pixel': self.cursor_pixel(), 'at': time.time(), 'sha256': hashlib.sha256(data).hexdigest()}
+            body['cursor'] = [(value - start) * NORM / max(1, length - 1) for value, start, length in zip(body['cursor_pixel'], (x1, y1), image[1:])]
+            zero = bytes(len(image[0]) // 4)
+            if image[0][0::4] == zero and image[0][1::4] == zero and image[0][2::4] == zero:
+                body['blank'] = True
+            json_file(shots / f'{sid}.json', body)
+            json_file(self.work / 'screen.json', body)
+            return body
+    def place(self, hwnd, left, top, right, bottom):
+        width, height = screen_size()
+        left, top, right, bottom = (int(float(v)) for v in (left, top, right, bottom))
+        if not (0 <= left < right <= NORM and 0 <= top < bottom <= NORM):
+            raise Fail('box is left top right bottom on 0-1000')
+        user32.ShowWindow(int(hwnd), 9)
+        return {'hwnd': int(hwnd), 'box': [left, top, right, bottom], 'moved': bool(user32.SetWindowPos(int(hwnd), ctypes.c_void_p(-2), left * width // NORM, top * height // NORM, max((right - left) * width // NORM, 1), max((bottom - top) * height // NORM, 1), 0x0040))}
+    def open_job(self, name=None):
+        job, limits = kernel32.CreateJobObjectW(None, name), JobLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x2000
+        if not (job and kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))):
+            self.close_job(job)
+            raise Fail('the wake could not open a job')
+        return job
+    def close_job(self, job):
+        if job:
+            kernel32.CloseHandle(job)
+def fit_size(width, height):
+    if min(width, height) <= 0 or max(width, height) / min(width, height) > 200:
+        raise Fail('the capture has a bad shape')
+    scale = min(1.0, 1440 / max(width, height))
+    return max(32, int(width * scale) // 32 * 32), max(32, int(height * scale) // 32 * 32)
+def system_text(width, height):
+    units = '0-1000 on each axis' if SET.get('coordinate_mode', 'normalized') == 'normalized' else 'pixels of the sent bitmap'
+    schema = {'name': 'computer_use', 'description': f'One desktop action. Coordinates are {units}. Bitmap is {width}x{height}. Aim at the center of the named target.', 'parameters': {'type': 'object', 'required': ['action'], 'properties': {'action': {'type': 'string', 'enum': list(ACTIONS)}, 'coordinate': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}, 'keys': {'type': 'array', 'items': {'type': 'string'}}, 'text': {'type': 'string'}, 'pixels': {'type': 'number'}, 'time': {'type': 'number'}, 'answer': {'type': 'string'}}}}
+    return 'You are the eye. One screenshot, one computer_use call. If the named target is not visible, terminate and name what is missing. A question terminates with the observation.\n<tools>\n' + json.dumps(schema) + '\n</tools>\n<tool_call>\n{"name": "computer_use", "arguments": {"action": "terminate", "answer": "what you see"}}\n</tool_call>'
+def validate(arguments, width=1000, height=1000):
+    action = arguments.get('action')
+    if action not in ACTIONS:
+        raise Fail(f'unsupported eye action: {action!r}')
+    required = ('coordinate',) if action in POINTER else {'key': ('keys',), 'type': ('text',), 'scroll': ('pixels',), 'hscroll': ('pixels',), 'wait': ('time',), 'terminate': ('answer',)}[action]
+    if not all(key in arguments for key in required) or set(arguments) - {'action', 'thoughts', *required}:
+        raise Fail(f'{action} has the wrong arguments')
+    if action in POINTER:
+        xy = arguments['coordinate']
+        if not isinstance(xy, list) or len(xy) != 2 or not all(type(v) in (int, float) and math.isfinite(v) and 0 <= v <= bound for v, bound in zip(xy, (width, height))):
+            raise Fail('the eye returned a point outside the coordinate space')
+    elif action == 'key':
+        keys = arguments['keys']
+        if not isinstance(keys, list) or not keys or not all(isinstance(key, str) and ALIASES.get(key.lower(), key.lower()) in VK for key in keys):
+            raise Fail('unsupported key combination')
+    elif action in ('type', 'terminate') and (not isinstance(arguments[required[0]], str) or (action == 'terminate' and not arguments['answer'].strip())):
+        raise Fail(f'{action} requires text')
+    elif action in ('scroll', 'hscroll') and (type(arguments['pixels']) not in (int, float) or abs(arguments['pixels']) > 10000):
+        raise Fail('scroll is too large')
+    elif action == 'wait' and not (type(arguments['time']) in (int, float) and 0 <= arguments['time'] <= 60):
+        raise Fail('wait must be 0-60 seconds')
+    return arguments
+def parse_call(raw, width=1000, height=1000):
+    matches = list(re.finditer(r'<tool_call>(.*?)</tool_call>', raw, re.S))
+    if len(matches) != 1:
+        raise Fail('the eye must return exactly one computer_use call')
+    try:
+        def unique(pairs):
+            out = {}
+            for key, value in pairs:
+                if key in out:
+                    raise ValueError('duplicate')
+                out[key] = value
+            return out
+        call = json.loads(matches[0][1], object_pairs_hook=unique)
+    except ValueError as error:
+        raise Fail('the eye returned invalid JSON') from error
+    if not isinstance(call, dict) or call.get('name') != 'computer_use' or not isinstance(call.get('arguments'), dict):
+        raise Fail('the eye must call computer_use')
+    return validate(call['arguments'], width, height)
+def load_capture(work):
+    with locked(Path(work) / 'capture.lock'):
+        path = Path(work) / 'screen.json'
+        if not path.exists():
+            raise Fail('there is no capture yet')
+        screen = json.loads(path.read_text(encoding='utf-8-sig'))
+        data = Path(screen['image']).read_bytes()
+        image = unpng(data)
+        digest = hashlib.sha256(data).hexdigest()
+        if list(image[1:]) != screen.get('size') or (screen.get('sha256') and screen['sha256'] != digest):
+            raise Fail('capture does not match its metadata')
+        return screen | {'sha256': digest}, image
+def ask(app, image, goal, screen):
+    width, height = fit_size(*image[1:])
+    fitted = image if image[1:] == (width, height) else app.desk.stretch(image, (0, 0, image[1], image[2]), width, height)
+    payload = {'model': SET['vision_model'], 'temperature': 0, 'max_tokens': 800, 'chat_template_kwargs': {'enable_thinking': False}, 'messages': [{'role': 'system', 'content': system_text(width, height)}, {'role': 'user', 'content': [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png(fitted)).decode()}}, {'type': 'text', 'text': goal}]}]}
+    request = urllib.request.Request(SET['vision_url'] + '/v1/chat/completions', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=180) as response:
+        body = json.load(response)
+    content = (body['choices'][0]['message'].get('content') or '').strip()
+    if not content:
+        raise Fail('the eye returned no content')
+    mode = SET.get('coordinate_mode', 'normalized')
+    arguments = parse_call(content, *((width - 1, height - 1) if mode == 'pixels' else (NORM, NORM)))
+    point = arguments.get('coordinate')
+    if point is not None and mode == 'pixels':
+        point = [point[0] * NORM / max(1, width - 1), point[1] * NORM / max(1, height - 1)]
+    scroll = None
+    if arguments['action'] in ('scroll', 'hscroll'):
+        axis = 0 if arguments['action'] == 'hscroll' else 1
+        scroll = arguments['pixels'] * image[axis + 1] / (NORM if mode == 'normalized' else (width, height)[axis])
+    return {'goal': goal, 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None}
+def point_pixel(point, size):
+    return [round(value * (length - 1) / NORM) for value, length in zip(point, size)]
+def patch_of(image, point):
+    pixels, width, height = image
+    x, y = point_pixel(point, (width, height))
+    box = [max(0, x - 2), max(0, y - 2), min(width, x + 3), min(height, y + 3)]
+    sample = b''.join(pixels[(row * width + box[0]) * 4:(row * width + box[2]) * 4] for row in range(box[1], box[3]))
+    return {'box': box, 'bgra': sample.hex()}
+def target_window(screen, point):
+    x, y = point_pixel(point, screen['size'])
+    left, top = screen['box'][:2]
+    for window in screen['windows']:
+        box = window.get('pixel_box')
+        if box and box[0] <= x + left < box[2] and box[1] <= y + top < box[3]:
+            return {key: window[key] for key in ('hwnd', 'pid', 'pixel_box')}
+    return None
+def foreground_of(screen):
+    return next(({key: window[key] for key in ('hwnd', 'pid', 'pixel_box')} for window in screen['windows'] if window.get('foreground')), None)
+def action_path(work, action_id):
+    if not re.fullmatch(r'[0-9a-f]{32}', str(action_id)):
+        raise Fail('invalid action id')
+    return Path(work) / 'actions' / (action_id + '.json')
+def store_action(app, screen, image, seen):
+    point = seen.get('coordinate') if seen.get('coordinate') is not None else screen['cursor']
+    if not all(0 <= value <= NORM for value in point):
+        raise Fail('the point lies outside the capture')
+    action_id = uuid.uuid4().hex
+    record = {'id': action_id, 'run': SET['run'], 'created': time.time(), 'state': 'ready', 'screen': screen, 'result': seen, 'point': point, 'patch': patch_of(image, point), 'target_window': target_window(screen, point), 'foreground': foreground_of(screen)}
+    if seen['action'] == 'left_click_drag':
+        record['start_patch'] = patch_of(image, screen['cursor'])
+    json_file(action_path(app.work, action_id), record)
+    return {'action_id': action_id, 'program': 'fara ' + action_id}
+def execute(desk, action_id):
+    with locked(desk.work / 'hand.lock'):
+        path = action_path(desk.work, action_id)
+        if not path.exists():
+            raise Fail('unknown action')
+        record = json.loads(path.read_text(encoding='utf-8'))
+        if record.get('state') != 'ready' or record.get('run') != SET['run']:
+            raise Fail('stale or consumed action')
+        if (desk.work / 'stop').exists() or (SET.get('wake_end') and time.time() >= float(SET['wake_end'])):
+            raise Fail('wake stopped or deadline reached')
+        desk.capture()
+        fresh, image = load_capture(desk.work)
+        original, result = record['screen'], record['result']
+        args, action = result['arguments'], result['action']
+        if any(fresh.get(key) != original.get(key) for key in ('region', 'box', 'size', 'screen_size')):
+            raise Fail('geometry changed')
+        if target_window(fresh, record['point']) != record.get('target_window') or patch_of(image, record['point']) != record.get('patch'):
+            raise Fail('target changed')
+        if action in ('key', 'type', 'scroll', 'hscroll') and foreground_of(fresh) != record.get('foreground'):
+            raise Fail('foreground window changed')
+        if action in ('left_click_drag', 'scroll', 'hscroll') and fresh.get('cursor_pixel') != original.get('cursor_pixel'):
+            raise Fail('cursor moved')
+        if action == 'left_click_drag' and patch_of(image, original['cursor']) != record.get('start_patch'):
+            raise Fail('drag start changed')
+        record.update(state='consumed', consumed_at=time.time(), fresh_capture=fresh['id'])
+        json_file(path, record)
+        desk.action_box = original['box']
+        try:
+            point = result.get('coordinate')
+            if action in ('left_click', 'right_click', 'double_click', 'triple_click'):
+                desk.click(*point, right=action == 'right_click', times={'double_click': 2, 'triple_click': 3}.get(action, 1))
+            elif action == 'mouse_move':
+                desk.move(*point)
+            elif action == 'left_click_drag':
+                desk.drag([original['cursor'], point])
+            elif action == 'key':
+                desk.key('+'.join(ALIASES.get(key.lower(), key.lower()) for key in args['keys']))
+            elif action == 'type':
+                desk.type_text(args['text'])
+            elif action in ('scroll', 'hscroll'):
+                desk.wheel(round(float(result['scroll_distance_pixels']) * 120 / 40), horizontal=action == 'hscroll')
+            elif action == 'wait':
+                time.sleep(float(args['time']))
+            else:
+                raise Fail('unsupported action')
+        finally:
+            if hasattr(desk, 'action_box'):
+                del desk.action_box
+def eye_run(app, path, dry=False):
+    text = read_file(path).strip()
+    if not text:
+        raise Fail('the eye file is empty')
+    screen, image = load_capture(app.work)
+    if screen.get('blank'):
+        return {'blank': True, 'capture': screen['id'], 'program': None}
+    seen = ask(app, image, text, screen)
+    if seen['action'] != 'terminate':
+        seen.update(store_action(app, screen, image, seen))
+    return seen
+def hands_run(app, path, dry=False):
+    src = read_file(path).strip()
+    parts = src.split()
+    if len(src.splitlines()) != 1 or len(parts) != 2 or parts[0] != 'fara':
+        raise Fail('the hand file must be exactly: fara ACTION_ID')
+    execute(app.desk, parts[1])
+    time.sleep(float(SET.get('shot_delay') or 1.5))
+    return app.desk.capture()
+def windows_run(app, _arg, dry=False):
+    return {'windows': app.desk.windows()}
+def capture_run(app, _arg, dry=False):
+    return {'dry': True} if dry else app.desk.capture()
+def region_run(app, value, dry=False):
+    value = str(value or 'NONE').strip()
+    if value != 'NONE':
+        parts = value.split(',')
+        nums = list(map(int, parts)) if len(parts) == 4 else []
+        if not (len(nums) == 4 and 0 <= nums[0] < nums[2] <= 1000 and 0 <= nums[1] < nums[3] <= 1000):
+            raise Fail('region is NONE or left,top,right,bottom on 0-1000')
+    with locked(app.work / 'capture.lock'):
+        atomic(app.work / 'region.txt', value)
+    return {'region': value}
+def place_run(app, values, dry=False):
+    return app.desk.place(*values)
+def measured(path):
+    path = Path(path)
+    text = path.read_text(encoding='utf-8', errors='replace') if path.exists() else ''
+    heads = list(HEAD.finditer(text))
+    components, first = {}, None
+    for head in heads:
+        kind = head.group(2)
+        if kind in COMPONENTS:
+            components[kind] = components.get(kind, 0) + 1
+            first = first or head.group(1)
+    errors = sum(head.group(2) == 'err' for head in heads)
+    return {'run': path.stem.removeprefix('run_'), 'source': str(path), 'first_event': heads[0].group(1) if heads else None, 'last_event': heads[-1].group(1) if heads else None, 'first_component': first, 'component_actions': components, 'recorded_errors': errors, 'harness_count_basis': 'markdown headings'}
+def journals(work, run):
+    work = Path(work)
+    paths = sorted(set(work.glob('run_*.md')) | {work / f'run_{run}.md'})
+    rows = [measured(path) for path in paths]
+    return next(row for row in rows if row['run'] == run), [row for row in rows if row['run'] != run][-5:]
+def learned_line(rows, ledger):
+    calls = sum(sum(row['component_actions'].values()) for row in rows)
+    errors = sum(row.get('recorded_errors') or 0 for row in rows)
+    advice = 'Compare the newest ledger line with the run markdown.' if str(ledger or '').strip() else 'There is no ledger lesson yet.'
+    return f'{len(rows)} earlier wakes, {errors} recorded errors, {calls} component actions. {advice}'
+def snapshot(work):
+    work = Path(work)
+    with locked(work / 'memory.lock'):
+        story = (work / 'story.txt').read_text(encoding='utf-8') if (work / 'story.txt').exists() else ''
+        ledger = (work / 'ledger.md').read_text(encoding='utf-8') if (work / 'ledger.md').exists() else ''
+        try:
+            meta = json.loads((work / 'story.meta.json').read_text(encoding='utf-8')) if (work / 'story.meta.json').exists() else {}
+        except (ValueError, TypeError):
+            meta = {}
+        if meta.get('sha256') != hashlib.sha256(story.encode()).hexdigest():
+            meta = {'run': None, 'status': 'unverified story provenance'}
+        return story, ledger, meta
+def newest(ledger):
+    parts = re.split(r'(?m)^## wake ', ledger or '')
+    return 'There is no ledger lesson yet.' if len(parts) < 2 else '## wake ' + parts[-1].strip()
+def _enter(work, lesson, state):
+    lesson = WAKE.sub('', str(lesson)).strip() or 'No lesson was written.'
+    if len(lesson) > 1200:
+        raise Fail('a lesson has 1-1200 characters')
+    path = Path(work) / 'ledger.md'
+    previous = path.read_text(encoding='utf-8') if path.exists() else ''
+    parts = WAKE.split(previous)[1:]
+    kept = [part for part in parts if part.split(None, 1)[0] != SET['run']]
+    start = float(SET['wake_start']) if SET.get('wake_start') else None
+    minutes = SET.get('minutes') or ''
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start)) if start is not None else 'start unknown'
+    used = f'{(time.time() - start) / 60:.1f}' if start is not None else 'unknown'
+    budget = f' of {float(minutes):g}' if minutes else ''
+    kept.append(f"{SET['run']} {stamp} used {used}{budget} min, {state}\n{lesson}\n")
+    while len(kept) > 12 or sum(map(len, kept)) > 8000:
+        del kept[0]
+    atomic(path, ''.join('## wake ' + part for part in kept))
+    return {'wakes': len(kept), 'lesson_len': len(lesson)}
+def current_lesson(work):
+    path = Path(work) / 'ledger.md'
+    for part in WAKE.split(path.read_text(encoding='utf-8') if path.exists() else '')[1:]:
+        if part.split(None, 1)[0] == SET['run']:
+            return part.split('\n', 1)[1].strip()
+    return ''
+def enter(work, lesson, state):
+    with locked(Path(work) / 'memory.lock'):
+        return _enter(work, lesson, state)
+def story_run(app, path, dry=False):
+    text = read_file(path)
+    meta = {'run': SET['run'], 'chat': os.environ.get('TRIDENT_CHAT_ID'), 'at': time.time(), 'sha256': hashlib.sha256(text.encode()).hexdigest()}
+    with locked(app.work / 'memory.lock'):
+        atomic(app.work / 'story.txt', text)
+        json_file(app.work / 'story.meta.json', meta)
+    return {'story_len': len(text)}
+def ledger_run(app, path, dry=False):
+    text = read_file(path).strip()
+    if not text or len(text) > 1200:
+        raise Fail('a lesson has 1-1200 characters')
+    return enter(app.work, text, 'open')
+def learn_run(app, _arg, dry=False):
+    _current, earlier = journals(app.work, SET['run'])
+    ledger = (app.work / 'ledger.md').read_text(encoding='utf-8') if (app.work / 'ledger.md').exists() else ''
+    return {'text': learned_line(earlier, ledger)}
+def stop_run(app, _arg, dry=False):
+    if not dry:
+        (app.work / 'stop').write_bytes(b'')
+    return {'stopped': not dry}
+def map_run(app, _arg, dry=False):
+    found = {}
+    for path in CODE.rglob('*.py'):
+        if set(path.parts) & {'agent', 'shots', 'actions', 'streams', '__pycache__', '.git'}:
+            continue
+        found[str(path.relative_to(CODE))] = len(path.read_text(encoding='utf-8').splitlines())
+    organism_lines = found.get('organism.py', 0)
+    return {'work': str(app.work), 'file': 'organism.py', 'organism_lines': organism_lines, 'under_1000': organism_lines < 1000 and sum(found.values()) < 1000, 'total_python_lines': sum(found.values()), 'python_files': found, 'vision': SET.get('vision_url'), 'journal_port': PORT, 'tools': [flag for _name, flag, _fn, _kind in TOOLS]}
+def brain(sentence):
+    if SET.get('mind_model'):
+        return SET['mind_model']
+    said = str(sentence).lower()
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh-fast')
+def render_prompt(app, sentence, minutes, end):
+    story, ledger, meta = snapshot(app.work)
+    current, earlier = journals(app.work, SET['run'])
+    status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
+    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 20 percent remaining, stop new work, write the story and one ledger lesson, and stop.' if minutes else 'No end time was given.'
+    packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
+    tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
+    return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
+def text_of(message):
+    content = (message or {}).get('content') if isinstance(message, dict) else message
+    if isinstance(content, list):
+        return ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
+    return '' if content is None else str(content)
+def tool_name(item):
+    call = item.get('tool_call') or {}
+    return next((key[:-8] for key in call if str(key).endswith('ToolCall')), 'tool')
+def spawn(app, model, prompt_path, job_name):
+    vendor, profile = app.work / 'agent', app.work / 'agent' / 'config'
+    profile.mkdir(parents=True, exist_ok=True)
+    (vendor / 'data').mkdir(parents=True, exist_ok=True)
+    temp = CODE.parent / 'temp'
+    temp.mkdir(exist_ok=True)
+    (profile / 'cli-config.json').write_text(json.dumps({'version': 1, 'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': []}, 'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True}), encoding='utf-8')
+    versions = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions'
+    folders = [path for path in versions.iterdir() if path.name[:1].isdigit() and (path / 'index.js').exists()] if versions.exists() else []
+    if not folders:
+        raise Fail('the agent runtime is not installed')
+    folder = max(folders)
+    env = os.environ | {'CURSOR_CONFIG_DIR': str(profile), 'CURSOR_DATA_DIR': str(vendor / 'data'), 'TEMP': str(temp), 'TMP': str(temp), 'PYTHONDONTWRITEBYTECODE': '1', 'PYTHONUTF8': '1'}
+    env.pop('OPENROUTER_API_KEY', None)
+    argv = [str(folder / 'node.exe'), '-e', "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);", str(folder / 'index.js'), '--trust', '--force', '-p', '--model', model, '--workspace', str(app.work), '--output-format', 'stream-json', str(prompt_path)]
+    return subprocess.Popen([str(PYTHON), '-B', str(CODE / 'main.py'), '--boot', job_name, *argv], cwd=str(app.work), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x08000000)
+def read_agent(proc, app, end):
+    calls = running = thought = 0
+    last, stop_at, result_at, reason = '', None, None, None
+    inbox = queue.Queue()
+    streams = app.work / 'streams'
+    streams.mkdir(exist_ok=True)
+    stream_path = streams / (uuid.uuid4().hex + '.stream')
+    def pump():
+        try:
+            with open(stream_path, 'wb') as saved:
+                for raw in proc.stdout:
+                    saved.write(raw if isinstance(raw, bytes) else raw.encode())
+                    saved.flush()
+                    inbox.put(raw)
+        except OSError as error:
+            inbox.put(error)
+        finally:
+            inbox.put(None)
+    threading.Thread(target=pump, daemon=True).start()
+    def finish(why):
+        if thought:
+            heading('think', f'chars={thought}')
+        if proc.poll() is None:
+            proc.kill()
+        return why, last
+    while True:
+        now = time.time()
+        if end and now >= end:
+            return finish('deadline')
+        if (app.work / 'stop').exists():
+            stop_at = stop_at or now + 60
+            if now >= stop_at:
+                return finish('stopped')
+        if result_at is not None and now >= result_at + .5:
+            return finish('failed_agent' if proc.poll() not in (None, 0) else reason)
+        try:
+            raw = inbox.get(timeout=.02)
+        except queue.Empty:
+            continue
+        if isinstance(raw, Exception):
+            heading('err', str(raw))
+            return finish('failed_stream')
+        if raw is None:
+            try:
+                code = proc.wait(timeout=.05)
+            except subprocess.TimeoutExpired:
+                code = None
+            return finish('failed_agent' if code not in (None, 0) else (reason or ('stopped' if stop_at else 'failed_eof')))
+        line = raw.decode('utf-8', 'replace').rstrip('\r\n') if isinstance(raw, bytes) else str(raw).rstrip('\r\n')
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(item, dict):
+            continue
+        kind, sub = item.get('type'), item.get('subtype')
+        if kind == 'thinking' and sub == 'delta':
+            thought += len(item.get('text') or '')
+            continue
+        if thought:
+            heading('think', f'chars={thought}')
+            thought = 0
+        if kind == 'assistant' and text_of(item.get('message')):
+            last = text_of(item.get('message'))
+            heading('say', last, 120)
+        elif kind == 'tool_call' and sub == 'started':
+            running += 1
+        elif kind == 'tool_call' and sub == 'completed':
+            running = max(0, running - 1)
+            calls += 1
+            heading('tool', tool_name(item))
+            if calls >= 42 and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
+                return finish('rotate')
+        elif kind == 'system' and sub == 'init':
+            heading('start', str(item.get('model') or ''))
+        elif kind == 'result':
+            failed = item.get('is_error') or item.get('error') or str(sub or '').startswith('error')
+            reason = 'failed_agent' if failed else ('stopped' if stop_at else 'completed')
+            last = last or str(item.get('result') or '')
+            if failed:
+                return finish(reason)
+            result_at = now
+def drive(app, sentence, minutes):
+    start = time.time()
+    end = start + minutes * 60 if minutes else None
+    SET['wake_start'], SET['wake_end'] = str(start), str(end or '')
+    (app.work / 'stop').unlink(missing_ok=True)
+    atomic(app.work / 'region.txt', 'NONE')
+    if sentence:
+        atomic(app.work / 'goal.txt', sentence)
+    outcome, said, proc, job, previous, chat_index = 'failed', '', None, None, os.environ.get('TRIDENT_CHAT_ID'), 0
+    try:
+        heading('wake', f'minutes={minutes or ""}')
+        while not (end and time.time() >= end) and not (app.work / 'stop').exists():
+            chat_index += 1
+            os.environ['TRIDENT_CHAT_ID'] = f"{SET['run']}:{chat_index}"
+            atomic(app.work / 'prompt.txt', render_prompt(app, sentence, minutes, end))
+            heading('chat', brain(sentence))
+            job_name = 'Trident-' + uuid.uuid4().hex
+            job = app.desk.open_job(name=job_name)
+            try:
+                proc = spawn(app, brain(sentence), app.work / 'prompt.txt', job_name)
+                outcome, said = read_agent(proc, app, end)
+            finally:
+                app.desk.close_job(job)
+                job = None
+                if proc is not None and proc.poll() is None:
+                    proc.kill()
+            if proc is not None:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                heading('agent-exit', outcome)
+                if proc.stdout:
+                    proc.stdout.close()
+                proc = None
+            if outcome != 'rotate':
+                break
+        else:
+            outcome = 'deadline' if end and time.time() >= end else 'stopped'
+        if said:
+            heading('report', said, 400)
+        return {'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}
+    finally:
+        app.desk.close_job(job)
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        enter(app.work, current_lesson(app.work), outcome)
+        if previous is None:
+            os.environ.pop('TRIDENT_CHAT_ID', None)
+        else:
+            os.environ['TRIDENT_CHAT_ID'] = previous
+def mind_run(app, path, dry=False):
+    sentence = read_file(path).strip()
+    minutes = float(SET['minutes']) if SET.get('minutes') else None
+    return drive(app, sentence, minutes)
+TOOLS = (
+    ('eye', 'eye_file', eye_run, 'text'), ('hands', 'hands_file', hands_run, 'text'),
+    ('story', 'story_file', story_run, 'text'), ('ledger', 'ledger_file', ledger_run, 'text'), ('capture', 'capture', capture_run, 'bool'),
+    ('windows', 'windows', windows_run, 'bool'), ('region', 'region', region_run, 'text'), ('place', 'place', place_run, 'place'),
+    ('learn', 'learn', learn_run, 'bool'), ('stop', 'stop', stop_run, 'bool'),
+    ('mind', 'mind_file', mind_run, 'text'), ('map', 'map', map_run, 'bool'),
+)
+class App:
+    def __init__(self, work):
+        self.work = Path(work).resolve()
+        self.work.mkdir(parents=True, exist_ok=True)
+        self.desk = Desk(self.work)
+def main(argv=None):
+    parser = argparse.ArgumentParser(add_help=False)
+    for flag in ('work', 'run', 'minutes', 'wake-start', 'wake-end', 'shot-delay', 'vision-url', 'vision-model', 'decide-model', 'mind-model'):
+        parser.add_argument('--' + flag, default='')
+    parser.add_argument('--coordinate-mode', choices=('normalized', 'pixels'), default='normalized')
+    parser.add_argument('--fresh', action='store_true')
+    parser.add_argument('--dry', action='store_true')
+    parser.add_argument('--journal', action='store_true')
+    for _name, flag, _fn, kind in TOOLS:
+        parser.add_argument('--' + flag, **({'action': 'store_true'} if kind == 'bool' else {'nargs': 5 if kind == 'place' else None}))
+    args = parser.parse_args(argv)
+    configure(args.work or str(CODE), args.run, args.minutes, getattr(args, 'wake_start'), getattr(args, 'wake_end'), args.shot_delay or '1.5', args.vision_url or 'http://192.168.16.31:1234', args.vision_model or 'retina', args.decide_model or 'typesafe/jev-1.14-20261014', args.mind_model, args.coordinate_mode)
+    SET['dry'] = bool(args.dry)
+    if args.journal:
+        serve_journal()
+        return
+    app = App(args.work or str(CODE))
+    picks = []
+    for name, flag, fn, kind in TOOLS:
+        value = getattr(args, flag.replace('-', '_'))
+        if kind == 'bool' and value:
+            picks.append((name, fn, True))
+        elif kind != 'bool' and value not in (None, ''):
+            picks.append((name, fn, value))
+    if len(picks) != 1:
+        raise Fail('choose one tool flag')
+    name, fn, value = picks[0]
+    if (app.work / 'stop').exists() and name in BLOCKED:
+        raise Fail('stopped')
+    started = time.time()
+    try:
+        result = fn(app, value, args.dry)
+    except Exception as error:
+        heading('err', f'{name} {error}')
+        raise
+    if isinstance(result, dict):
+        emit(name, result)
+if __name__ == '__main__':
+    if len(sys.argv) > 2 and sys.argv[1] == '--boot':
+        try:
+            sys.exit(boot(sys.argv[2], sys.argv[3:]))
+        except Exception as error:
+            print(str(error), file=sys.stderr)
+            sys.exit(1)
+    try:
+        main()
+    except Fail as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

@@ -1,9 +1,5 @@
 *
 !/.gitignore
 !/*.py
-!/skills/
-!/skills/**
-!/tests/
-!/tests/*.py
 __pycache__/
 *.pyc
