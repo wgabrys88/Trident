@@ -508,27 +508,29 @@ These are the places the other reports and this one describe the same record.
 
 ### Disagreements kept
 
-**1. “A word is not a key” was not the schema at 18:39.**
+The second reading of the other consultations closed the report-versus-report splits in items 1, 2, 4, and 5. Each item quotes the first draft and the revised sentence. Item 3 is the split that remains, and it is between two vendor pages. Cost’s consultation prints the same split.
 
-Behavior section 3.11, quoting the file as it is now:
+**1. “A word is not a key” was not the schema at 18:39. Closed by behavior’s rewrite.**
+
+The first draft of behavior section 3.11 set the current line beside the 18:39 failure:
 
 > `organism.py` line 453, inside the tool schema the eye receives: “A word is not a key.”
 
-The same section then cites ledger line 24 and the two `unparsed` actions in `run_20261027_183727.md` (18:37–18:42).
+Commit `0b353b99356c2348dac340bc8040132c8fd6479b`, author date Tuesday 27 October 2026 19:18:51 +0100, message: “Tell the eye that a word is typed and a key is named. The keys and text descriptions now say a word is not a key.” That commit is after the 18:39 failure.
 
-Commit `0b353b99356c2348dac340bc8040132c8fd6479b`, author date Tuesday 27 October 2026 19:18:51 +0100, message: “Tell the eye that a word is typed and a key is named. The keys and text descriptions now say a word is not a key.” That commit is after the 18:39 failure. Current line 453 does contain “A word is not a key.” The wake at 18:39 had not loaded it. This report’s chain D stands: the schema description arrived at 19:18:51. Behavior’s juxtaposition of the current line with the 18:39 failure is the disagreement.
+The current behavior section 3.11 quotes the same commit and says: “The eye of that wake had not been shown the sentence. … Report 02’s chain D is this timing. The earlier pairing of today’s line 453 with the 18:39 failure was wrong.” The current texts agree. The first-draft pairing is not kept.
 
-**2. `chars=N` is the journal writer, and the 151228 lesson is a different sentence.**
+**2. `chars=N` is the journal writer. Closed by behavior’s rewrite.**
 
-Behavior section 3.16:
+The first draft of behavior section 3.16 treated this sentence as the cause of the short journals:
 
 > Ledger line 18 says “do not put full model essays into the run markdown,” which is a second source for the intention to cut essays, dated to the 151228 lesson, immediately before the truncated journals.
 
-Ledger line 19, the `151228` lesson, ends: “Do not grow a second code tree, and do not put full model essays into the run markdown.” That sentence is OBSERVED.
+Ledger line 19, the `151228` lesson, ends: “Do not grow a second code tree, and do not put full model essays into the run markdown.” That sentence is OBSERVED. It is an intention.
 
 The thoughts in `155202`, `160354`, and `182210` are stored as `chars=N`. Commit `26f2fa07379c9184f087b7e9068e18450bc5f56d`, 27 October 2026 18:37:15 +0100, message: “Store the mind's full thought and the full tool call.” `183727` starts at 18:37:27 and stores full thinks. Systems section 3.6 dates the `chars=<n>` writer to commit `6739ed1`, still loaded at 18:22. Cost sections 3.2 and 4.6 record that the matching streams still hold the thinking deltas while the markdown holds `chars=`.
 
-INFERRED by behavior, medium confidence on their own label: the lesson caused the truncation. This report does not adopt that inference. The mechanism with a commit and a timestamp is the writer. The lesson states an intention. Both artifacts are real. They are not the same cause. SINGLE-SOURCE for “the lesson is why the writer counted”: behavior’s inference. The writer’s commit and the `chars=N` headings are the other side.
+The current behavior section 3.16 says: “Report 02 does not treat that sentence as the writer. … INFERRED that the lesson caused the truncation is not supported.” Their consultation adds that they did not open the blob, so confidence on the commit stays medium. This report opened `git log` for `26f2fa0` and `0b353b9`. The journals and the lesson sentence are agreed. The unread commit is a difference of what they opened, not a second cause.
 
 **3. Cursor’s long-context Fast sentence and xAI’s long-context Fast sentence.**
 
