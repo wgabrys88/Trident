@@ -790,7 +790,8 @@ def spawn(app, model, prompt_path, job_name):
     argv = [str(folder / 'node.exe'), '-e', "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);", str(folder / 'index.js'), '--trust', '--force', '-p', '--model', model, '--workspace', str(app.work), '--output-format', 'stream-json', str(prompt_path)]
     return subprocess.Popen([str(PYTHON), '-B', str(CODE / 'main.py'), '--boot', job_name, *argv], cwd=str(app.work), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=0x08000000)
 def read_agent(proc, app, end):
-    calls = running = thought = 0
+    calls = running = 0
+    thought = ''
     last, stop_at, result_at, reason = '', None, None, None
     inbox = queue.Queue()
     streams = app.work / 'streams'
@@ -809,7 +810,7 @@ def read_agent(proc, app, end):
             inbox.put(None)
     threading.Thread(target=pump, daemon=True).start()
     def finish(why):
-        if thought: heading('think', f'chars={thought}')
+        if thought: heading('think', thought)
         if proc.poll() is None: proc.kill()
         return why, last
     while True:
@@ -844,9 +845,9 @@ def read_agent(proc, app, end):
             continue
         kind, sub = item.get('type'), item.get('subtype')
         if kind == 'thinking' and sub == 'delta':
-            thought += len(item.get('text') or ''); continue
+            thought += item.get('text') or ''; continue
         if thought:
-            heading('think', f'chars={thought}'); thought = 0
+            heading('think', thought); thought = ''
         if kind == 'assistant' and text_of(item.get('message')):
             last = text_of(item.get('message'))
             heading('say', last)
@@ -855,7 +856,7 @@ def read_agent(proc, app, end):
         elif kind == 'tool_call' and sub == 'completed':
             running = max(0, running - 1)
             calls += 1
-            heading('tool', tool_name(item))
+            heading('tool', json.dumps(item.get('tool_call') or {}, ensure_ascii=False))
             if calls >= 42 and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
                 return finish('rotate')
         elif kind == 'system' and sub == 'init':
