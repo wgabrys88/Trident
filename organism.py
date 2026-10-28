@@ -616,7 +616,7 @@ def execute(desk, action_id):
                 del desk.action_box
 def eye_log(data):
     rows = [f"action={t.get('action')} coordinate={t.get('coordinate')}{' input=' + json.dumps(t['input']) if t.get('input') else ''} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
-    state = f"open, no new row for {int(time.time() - max(t.get('t', 0) for t in data['turns']))} s" if data.get('open') and data.get('turns') and data['turns'][-1].get('t') else 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
+    state = f"open, no new turn for {int(time.time() - max(t.get('t', 0) for t in data['turns']))} s" if data.get('open') and data.get('turns') and data['turns'][-1].get('t') else 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
     return state + '\n' + '\n'.join(rows) + (f"\nverify={data['verify']}" if data.get('verify') else '')
 def eye_verify(app, text, claim):
     shot = app.desk.capture()
@@ -652,6 +652,7 @@ def eye_steps(app, text, end, limit, fresh):
             json_file(file, data)
         screen, image = load_capture(app.work)
         try: seen = ask(app, image, screen, data['turns'])
+        except OSError: return stop('interrupted')
         except Fail as error:
             raw = str(getattr(error, 'raw', None) or error)
             put('assistant', text=raw, action='unparsed', coordinate=None, answer=raw, thought=raw)
@@ -669,8 +670,9 @@ def eye_steps(app, text, end, limit, fresh):
         if seen['action'] in FARA_ONLY:
             put('user', text='Done. Fact kept.' if seen['action'] == 'pause_and_memorize_fact' else f"Not done. {seen['action']} is not available. This is a Windows desktop, not a browser."); continue
         done = app.__dict__.setdefault('done', [])
-        repeats = done.count((seen['action'], str(coord))) if coord is not None else 0
-        done.append((seen['action'], str(coord)))
+        key = (seen['action'], str(coord), str(seen['arguments'].get('text') or seen['arguments'].get('keys') or ''), screen.get('sha256'))
+        repeats = done.count(key) if coord is not None else 0
+        done.append(key)
         if repeats >= 2: return stop('repeat')
         if repeats:
             put('user', text=f"Not done. {seen['action']} at {coord} already happened. Choose another action or another coordinate."); continue
