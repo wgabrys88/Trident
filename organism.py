@@ -13,6 +13,10 @@ BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'm
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 ACTIONS = ('left_click', 'right_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'key', 'type', 'scroll', 'hscroll', 'wait', 'terminate')
 POINTER = ACTIONS[:6]
+FARA_ONLY = ('visit_url', 'history_back', 'web_search', 'read_page_answer_question', 'pause_and_memorize_fact', 'ask_user_question')
+FARA_SYSTEM = 'You are Fara, a computer use agent (CUA) specialized for web browsers. You are developed by Microsoft AI Frontiers. You assist users with completing and automating tasks that require the use of a web browser.\n\nThe model was trained in the timeframe of January - April 2026. You can effectively perform tasks even beyond this range by accessing the web browser and using the latest information on the live web. But your knowledge cutoff is limited to early 2026, so you may not be aware of events or developments that occurred after that time, without explicitly browsing and searching for latest information on the web.\n\nThis edition of the model was trained using SFT on top of Qwen3.5-4B, using a synthetic data mixture generated and developed by Microsoft AI Frontiers.\n\nA critical point is a situation where we must pause and request information or confirmation from the user before proceeding. There are three types:\n\nCase 1: Missing User Information — The task requires personal information that the user has not provided (e.g., email, phone number, address, payment details). Never fabricate or assume personal information. Fill in only what the user has explicitly provided, then pause and ask for any missing required fields. (e.g., form requires phone number but user only gave name and email -> fill name and email, then ask for phone number.) If the user has provided all required information, proceed without stopping.\n\nCase 2: Underspecified Task — The task description is ambiguous or missing details needed to make a decision at the current step. Pause and ask for clarification. (e.g., user asks to book a flight but doesn\'t specify destination -> ask for destination.) If the user\'s instructions contain all information needed for the current decision, proceed without stopping.\n\nCase 3: Irreversible Action — We are about to perform an action that cannot be undone (e.g., submitting a form, completing a purchase, sending a message, deleting data). If the user explicitly authorized the action (e.g., "submit the form", "complete the purchase", "you have my permission to submit") -> proceed without stopping. If the user did NOT explicitly authorize the action -> stop and ask for confirmation. (e.g., "fill out a form" with no mention of submitting -> fill the form, then ask before submitting; "fill out and submit a form" -> fill and submit without stopping.)\n\nOnly stop at a critical point if (1) required information is missing, (2) the task is ambiguous, OR (3) an irreversible action lacks explicit user authorization. If the user has provided all necessary information AND explicitly authorized the action, proceed without interruption.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n{"type": "function", "function": {"name": "computer_use", "description": "Use a mouse and keyboard to interact with a computer, and take screenshots.\\n* This is an interface to a desktop GUI. You do not have access to a terminal or applications menu. You must click on desktop icons to start applications.\\n* Some applications may take time to start or process actions, so you may need to wait and take successive screenshots to see the results of your actions. E.g. if you click on Firefox and a window doesn\'t open, try wait and taking another screenshot.\\n* The screen\'s resolution is 1000x1000.\\n* Whenever you intend to move the cursor to click on an element like an icon, you should consult a screenshot to determine the coordinates of the element before moving the cursor.\\n* If you tried clicking on a program or link but it failed to load, even after waiting, try adjusting your cursor position so that the tip of the cursor visually falls on the element that you want to click.\\n* Make sure to click any buttons, links, icons, etc with the cursor tip in the center of the element. Don\'t click boxes on their edges.", "parameters": {"properties": {"action": {"description": "The action to perform. The available actions are:\\n* `key`: Performs key down presses on the arguments passed in order, then performs key releases in reverse order. Includes \\"Enter\\", \\"Alt\\", \\"Shift\\", \\"Tab\\", \\"Control\\", \\"Backspace\\", \\"Delete\\", \\"Escape\\", \\"ArrowUp\\", \\"ArrowDown\\", \\"ArrowLeft\\", \\"ArrowRight\\", \\"PageDown\\", \\"PageUp\\", \\"Shift\\", etc.\\n* `type`: Type a string of text on the keyboard.\\n* `mouse_move`: Move the cursor to a specified (x, y) pixel coordinate on the screen.\\n* `left_click`: Click the left mouse button.\\n* `double_click`: Double-click the left mouse button.\\n* `right_click`: Click the right mouse button.\\n* `triple_click`: Triple-click the left mouse button (e.g. to select a line of text).\\n* `left_click_drag`: Click and drag the cursor to a specified (x, y) pixel coordinate on the screen.\\n* `scroll`: Performs a scroll of the mouse scroll wheel.\\n* `hscroll`: Performs a horizontal scroll (mapped to regular scroll).\\n* `visit_url`: Visit a specified URL.\\n* `history_back`: Go back to the previous page in the browser history.\\n* `web_search`: Perform a web search with a specified query.\\n* `read_page_answer_question`: Read the current page content and answer a question about it.\\n* `pause_and_memorize_fact`: Pause and memorize a fact for future reference.\\n* `ask_user_question`: Ask the user a clarifying question and wait for a response.\\n* `wait`: Wait specified seconds for the change to happen.\\n* `terminate`: Terminate the current task and provide the final answer.", "enum": ["key", "type", "mouse_move", "left_click", "left_click_drag", "right_click", "double_click", "triple_click", "scroll", "hscroll", "visit_url", "history_back", "web_search", "read_page_answer_question", "pause_and_memorize_fact", "ask_user_question", "wait", "terminate"], "type": "string"}, "keys": {"description": "Required only by `action=key`.", "type": "array"}, "text": {"description": "Required only by `action=type`.", "type": "string"}, "coordinate": {"description": "(x, y): The x (pixels from the left edge) and y (pixels from the top edge) coordinates to move the mouse to. Required by `action=left_click`, `action=double_click`, `action=right_click`, `action=triple_click`, `action=left_click_drag`, and `action=mouse_move`.", "type": "array"}, "pixels": {"description": "The amount of scrolling to perform. Positive values scroll up, negative values scroll down. Required only by `action=scroll` and `action=hscroll`.", "type": "number"}, "url": {"description": "The URL to visit. Required only by `action=visit_url`.", "type": "string"}, "query": {"description": "The query to search for. Required only by `action=web_search`.", "type": "string"}, "fact": {"description": "The fact to remember for the future. Required only by `action=pause_and_memorize_fact`.", "type": "string"}, "question": {"description": "The question to ask. Required by `action=read_page_answer_question` and `action=ask_user_question`.", "type": "string"}, "time": {"description": "The seconds to wait. Required only by `action=wait`.", "type": "number"}, "answer": {"description": "The final answer for the task. Required only by `action=terminate`.", "type": "string"}}, "required": ["action"], "type": "object"}}}\n</tools>\n\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n{"name": <function-name>, "arguments": <args-json-object>}\n</tool_call>'
+NEXT = 'Here is the next screenshot. Think about what to do next.'
+EYE_STEPS, EYE_WAIT = 20, 25
 ALIASES = {'arrowup': 'up', 'arrowdown': 'down', 'arrowleft': 'left', 'arrowright': 'right', 'super': 'win'}
 SRCCOPY, CAPTUREBLT, HALFTONE = 0x00CC0020, 0x40000000, 4
 MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001, 0x0002, 0x0004, 0x0008, 0x0010, 0x0800, 0x1000, 0x8000
@@ -20,12 +24,12 @@ KEYUP, EXTENDED = 0x0002, 0x0001
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
 MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
-On every chat, including after 42 tool calls, read FARA and replan. While her log says open, do not call --eye-file again. Read organism.py. Edit it only when this wake's record shows a defect in that file. The running process keeps the loaded body. After terminated, pass the next subtask sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
-A terminate answer is her claim. Do not --stop because she says the task is done. --stop only in the last 5 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
-This chat rotates after 42 completed tool calls. After 35, write the story and replace this wake's ledger lesson, then continue. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
+On every chat, read FARA and replan. While her log says open, call --eye-file again with the same sentence; it waits for her and never restarts her. Edit organism.py only when this wake's record shows a defect in it. The running process keeps the loaded body. After terminated with verify YES, pass the next subtask sentence. After verify NO, repeat, steps, blank, or interrupted, she stopped without the result: pass a changed sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
+A terminate answer is her claim; the verify line is her second look at a fresh screen. Do not --stop because she says the task is done. --stop only in the last 5 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
+Write the story and this wake's ledger lesson whenever the plan changes. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
 On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
 DOCS = (
-'--eye-file PATH. Write the current subtask sentence. While the wake eye is live, return her log at once. Otherwise Fara runs until she terminates or 8 actions.',
+'--eye-file PATH. Write the current subtask sentence. While the wake eye is live, wait up to 25 seconds for her to finish, then return her log. Otherwise Fara runs until she terminates or 8 actions.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
 '--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
 '--windows. List titled windows. A minimized window has box null.',
@@ -447,17 +451,17 @@ def fit_size(width, height):
     if min(width, height) <= 0 or max(width, height) / min(width, height) > 200:
         raise Fail('the capture has a bad shape')
     scale = min(1.0, 1440 / max(width, height))
-    return max(32, int(width * scale) // 32 * 32), max(32, int(height * scale) // 32 * 32)
+    return max(32, round(width * scale / 32) * 32), max(32, round(height * scale / 32) * 32)
 def system_text(width, height):
-    units = '0-1000 on each axis' if SET.get('coordinate_mode', 'normalized') == 'normalized' else 'pixels of the sent bitmap'
-    schema = {'name': 'computer_use', 'description': f'One desktop action. Coordinates are {units}. Bitmap is {width}x{height}. Aim at the center of the named target.', 'parameters': {'type': 'object', 'required': ['action'], 'properties': {'action': {'type': 'string', 'enum': list(ACTIONS)}, 'coordinate': {'type': 'array', 'items': {'type': 'number'}, 'minItems': 2, 'maxItems': 2}, 'keys': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Named keys: Enter, Alt, Shift, Tab, Control, arrows, or one character. A word is not a key.'}, 'text': {'type': 'string', 'description': 'The string for action type. A word uses type and text.'}, 'pixels': {'type': 'number'}, 'time': {'type': 'number'}, 'answer': {'type': 'string'}}}}
-    return 'You are the eye. One screenshot, one computer_use call. If the named target is not visible, terminate and name what is missing. A question terminates with the observation. When the subtask is done, terminate and put the observation in answer.\n<tools>\n' + json.dumps(schema) + '\n</tools>\n<tool_call>\n{"name": "computer_use", "arguments": {"action": "left_click", "coordinate": [500, 400]}}\n</tool_call>'
+    return FARA_SYSTEM if SET.get('coordinate_mode', 'normalized') == 'normalized' else FARA_SYSTEM.replace('1000x1000', f'{width}x{height}')
 def validate(arguments, width=1000, height=1000):
     action = arguments.get('action')
+    if action in FARA_ONLY:
+        return arguments
     if action not in ACTIONS:
         raise Fail(f'unsupported eye action: {action!r}')
     required = ('coordinate',) if action in POINTER else {'key': ('keys',), 'type': ('text',), 'scroll': ('pixels',), 'hscroll': ('pixels',), 'wait': ('time',), 'terminate': ('answer',)}[action]
-    if not all(key in arguments for key in required) or set(arguments) - {'action', 'thoughts', *required}:
+    if not all(key in arguments for key in required):
         raise Fail(f'{action} has the wrong arguments')
     if action in POINTER:
         xy = arguments['coordinate']
@@ -501,18 +505,21 @@ def ask(app, image, screen, turns):
     width, height = fit_size(*image[1:])
     kept = [turn for turn in turns if turn.get('shot')][-3:]
     messages = [{'role': 'system', 'content': system_text(width, height)}]
-    for turn in turns:
+    for index, turn in enumerate(turns):
         if turn['role'] == 'assistant':
             messages.append({'role': 'assistant', 'content': turn.get('text') or ''}); continue
         raw = image if turn.get('shot') == screen.get('id') else (unpng((app.work / 'shots' / (turn['shot'] + '.png')).read_bytes()) if turn in kept else None)
         fit = None if raw is None else raw if raw[1:] == (width, height) else app.desk.stretch(raw, (0, 0, raw[1], raw[2]), width, height)
         bits = [] if fit is None else [{'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + base64.b64encode(png(fit)).decode()}}]
-        messages.append({'role': 'user', 'content': bits + [{'type': 'text', 'text': turn.get('text') or ''}]})
-    payload = {'model': SET['vision_model'], 'temperature': 0, 'max_tokens': 2048, 'chat_template_kwargs': {'enable_thinking': False}, 'messages': messages}
+        said = turn.get('text') or ''
+        said = said if index == 0 else (said + '\n\n' if said and said != 'observe' else '') + NEXT
+        messages.append({'role': 'user', 'content': bits + [{'type': 'text', 'text': said}]})
+    payload = {'model': SET['vision_model'], 'temperature': 0, 'max_tokens': 4096, 'messages': messages}
     request = urllib.request.Request(SET['vision_url'] + '/v1/chat/completions', json.dumps(payload).encode(), {'Content-Type': 'application/json'})
     with urllib.request.urlopen(request, timeout=180) as response:
         body = json.load(response)
-    content = (body['choices'][0]['message'].get('content') or '').strip()
+    reply = body['choices'][0]['message']
+    content = (reply.get('content') or '').strip()
     if not content: raise Fail('the eye returned no content')
     mode = SET.get('coordinate_mode', 'normalized')
     try:
@@ -526,7 +533,7 @@ def ask(app, image, screen, turns):
     if arguments['action'] in ('scroll', 'hscroll'):
         axis = 0 if arguments['action'] == 'hscroll' else 1
         scroll = arguments['pixels'] * image[axis + 1] / (NORM if mode == 'normalized' else (width, height)[axis])
-    return {'goal': turns[-1].get('text'), 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None, 'thought': content.split('<tool_call>', 1)[0].strip(), 'raw': content}
+    return {'goal': turns[-1].get('text'), 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None, 'thought': ' '.join(part for part in ((reply.get('reasoning_content') or '').strip()[-600:], content.split('<tool_call>', 1)[0].split('</think>')[-1].strip()) if part), 'raw': content}
 def point_pixel(point, size):
     return [round(value * (length - 1) / NORM) for value, length in zip(point, size)]
 def patch_of(image, point):
@@ -609,7 +616,16 @@ def execute(desk, action_id):
                 del desk.action_box
 def eye_log(data):
     rows = [f"action={t.get('action')} coordinate={t.get('coordinate')} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
-    return ('open' if data.get('open') else 'terminated') + '\n' + '\n'.join(rows)
+    state = 'open' if data.get('open') else data.get('stop') or 'terminated'
+    return state + '\n' + '\n'.join(rows) + (f"\nverify={data['verify']}" if data.get('verify') else '')
+def eye_verify(app, text, claim):
+    shot = app.desk.capture()
+    if shot.get('blank'): return 'NO blank capture'
+    screen, image = load_capture(app.work)
+    ask_text = f'Do not act. Only look at this screenshot. The task was: "{text}". The claimed result is: "{claim}". Is that result visible on the screen now? Terminate with an answer that starts with YES or NO, then say what you see.'
+    try: seen = ask(app, image, screen, [{'role': 'user', 'text': ask_text, 'shot': shot['id']}])
+    except Fail as error: return f'NO verdict: {error}'
+    return seen['answer'] if seen['action'] == 'terminate' else f"NO verdict: she chose {seen['action']} instead of looking"
 def eye_halted(app, end):
     return (app.work / 'stop').exists() or bool(end and time.time() >= end)
 def eye_steps(app, text, end, limit, fresh):
@@ -621,15 +637,17 @@ def eye_steps(app, text, end, limit, fresh):
     def put(role, **fields):
         data['turns'].append({'role': role, **fields}); json_file(file, data)
     put('user', text=text)
-    steps = 0
-    while not eye_halted(app, end) and (limit is None or steps < limit):
-        if limit is None and not (app.work / 'eye.live').exists(): break
+    steps, live, limit = 0, limit is None, limit or EYE_STEPS
+    def stop(reason):
+        data['open'], data['stop'] = False, reason; json_file(file, data); heading('eye', 'stop=' + reason); return reason
+    while not eye_halted(app, end) and steps < limit:
+        if live and not (app.work / 'eye.live').exists(): break
         steps += 1
         last = data['turns'][-1]
         if last.get('role') != 'user' or not last.get('shot'):
             shot = app.desk.capture()
             if shot.get('blank'):
-                put('user', text='blank capture', shot=shot.get('id')); return 'blank'
+                put('user', text='blank capture', shot=shot.get('id')); return stop('blank')
             last.update(shot=shot['id']) if last.get('role') == 'user' else data['turns'].append({'role': 'user', 'text': 'observe', 'shot': shot['id']})
             json_file(file, data)
         screen, image = load_capture(app.work)
@@ -642,11 +660,17 @@ def eye_steps(app, text, end, limit, fresh):
         raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), str(seen.get('thought') or '')
         heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}")
         put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, answer=seen.get('answer') or '')
-        if seen['action'] == 'terminate':
+        if seen['action'] in ('terminate', 'ask_user_question'):
+            claim = seen.get('answer') or 'Question: ' + str(seen['arguments'].get('question') or '')
+            data['verify'] = eye_verify(app, text, claim) if seen['action'] == 'terminate' else 'NO she asked a question'
+            heading('eye', 'verify=' + data['verify'])
             data['open'] = False; json_file(file, data); return 'terminated'
-        if limit is None and not (app.work / 'eye.live').exists(): break
-        prior = next((turn for turn in reversed(data['turns'][:-1]) if turn.get('role') == 'assistant' and turn.get('action') not in (None, 'unparsed')), None)
-        if prior and prior.get('action') == seen['action'] and prior.get('coordinate') == coord:
+        if live and not (app.work / 'eye.live').exists(): break
+        if seen['action'] in FARA_ONLY:
+            put('user', text='Done. Fact kept.' if seen['action'] == 'pause_and_memorize_fact' else f"Not done. {seen['action']} is not available. This is a Windows desktop, not a browser."); continue
+        repeats = sum(1 for turn in data['turns'][:-1] if turn.get('role') == 'assistant' and turn.get('action') == seen['action'] and turn.get('coordinate') == coord and coord is not None)
+        if repeats >= 2: return stop('repeat')
+        if repeats:
             put('user', text=f"Not done. {seen['action']} at {coord} already happened. Choose another action or another coordinate."); continue
         try:
             seen['goal'] = text
@@ -657,7 +681,7 @@ def eye_steps(app, text, end, limit, fresh):
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
             if halted: break
-    return 'halted'
+    return stop('steps') if steps >= limit and data.get('open') and not eye_halted(app, end) else 'halted'
 def eye_data(app):
     file = app.work / 'fara_traj.json'
     return json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
@@ -668,20 +692,19 @@ def eye_watch(app, end):
         except OSError: stamp, sentence = 0, ''
         if not sentence or stamp < born or sentence == finished:
             time.sleep(0.4); continue
-        if eye_steps(app, sentence, end, None, True) == 'terminated': finished = sentence
-        else: time.sleep(0.4)
+        eye_steps(app, sentence, end, None, True); finished = sentence
 def eye_run(app, path, dry=False):
     text = read_file(path).strip()
     if not text: raise Fail('the eye file is empty')
     if dry: return {'log': 'dry'}
     atomic(app.work / 'eye_now.txt', text)
     if (app.work / 'eye.live').exists():
-        deadline = time.time() + 3
+        deadline = time.time() + EYE_WAIT
         while time.time() < deadline:
             data = eye_data(app)
             turns = data.get('turns') or []
-            if data.get('open') and turns and turns[0].get('text') == text: break
-            time.sleep(0.2)
+            if not data.get('open') and turns and turns[0].get('text') == text: break
+            time.sleep(0.5)
         return {'log': eye_log(eye_data(app))}
     end = float(SET['wake_end']) if SET.get('wake_end') else None
     eye_steps(app, text, end, 8, False)
@@ -935,7 +958,7 @@ def drive(app, sentence, minutes):
         if traj.exists():
             prior = json.loads(traj.read_text(encoding='utf-8'))
             if prior.get('open'):
-                prior['open'] = False; json_file(traj, prior)
+                prior['open'], prior['stop'] = False, 'interrupted'; json_file(traj, prior)
         atomic(app.work / 'eye.live', '1')
         app.eye_thread = threading.Thread(target=eye_watch, args=(app, end), daemon=True); app.eye_thread.start()
         while not (end and time.time() >= end) and not (app.work / 'stop').exists():
