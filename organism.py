@@ -533,7 +533,7 @@ def ask(app, image, screen, turns):
     if arguments['action'] in ('scroll', 'hscroll'):
         axis = 0 if arguments['action'] == 'hscroll' else 1
         scroll = arguments['pixels'] * image[axis + 1] / (NORM if mode == 'normalized' else (width, height)[axis])
-    return {'goal': turns[-1].get('text'), 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None, 'thought': ' '.join(part for part in ((reply.get('reasoning_content') or '').strip()[-600:], content.split('<tool_call>', 1)[0].split('</think>')[-1].strip()) if part), 'raw': content}
+    return {'goal': turns[-1].get('text'), 'capture': screen['id'], 'action': arguments['action'], 'arguments': arguments, 'coordinate': point, 'answer': arguments.get('answer', ''), 'scroll_distance_pixels': scroll, 'reported_model': body.get('model'), 'program': None, 'thought': ' '.join(part for part in ((reply.get('reasoning_content') or content.split('</think>')[0].split('<think>')[-1] * ('</think>' in content)).strip()[-600:], content.split('<tool_call>', 1)[0].split('</think>')[-1].strip()) if part), 'raw': content}
 def point_pixel(point, size):
     return [round(value * (length - 1) / NORM) for value, length in zip(point, size)]
 def patch_of(image, point):
@@ -615,14 +615,14 @@ def execute(desk, action_id):
             if hasattr(desk, 'action_box'):
                 del desk.action_box
 def eye_log(data):
-    rows = [f"action={t.get('action')} coordinate={t.get('coordinate')} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
-    state = 'open' if data.get('open') else data.get('stop') or 'terminated'
+    rows = [f"action={t.get('action')} coordinate={t.get('coordinate')}{' input=' + json.dumps(t['input']) if t.get('input') else ''} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
+    state = 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
     return state + '\n' + '\n'.join(rows) + (f"\nverify={data['verify']}" if data.get('verify') else '')
 def eye_verify(app, text, claim):
     shot = app.desk.capture()
     if shot.get('blank'): return 'NO blank capture'
     screen, image = load_capture(app.work)
-    ask_text = f'Do not act. Only look at this screenshot. The task was: "{text}". The claimed result is: "{claim}". Is that result visible on the screen now? Terminate with an answer that starts with YES or NO, then say what you see.'
+    ask_text = f'Do not act. Only look at this screenshot. The task was: "{text}". The claim was: "{claim}". Is the task done on the screen now? Terminate with an answer that starts with YES or NO, then say what you see.'
     try: seen = ask(app, image, screen, [{'role': 'user', 'text': ask_text, 'shot': shot['id']}])
     except Fail as error: return f'NO verdict: {error}'
     return seen['answer'] if seen['action'] == 'terminate' else f"NO verdict: she chose {seen['action']} instead of looking"
@@ -630,10 +630,10 @@ def eye_halted(app, end):
     return (app.work / 'stop').exists() or bool(end and time.time() >= end)
 def eye_steps(app, text, end, limit, fresh):
     file = app.work / 'fara_traj.json'
-    if fresh: data = {'open': True, 'turns': []}
+    if fresh: data = {'open': True, 'turns': [], 'run': SET['run']}
     else:
         data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
-        data = data if data.get('open') else {'open': True, 'turns': []}
+        data = data if data.get('open') else {'open': True, 'turns': [], 'run': SET['run']}
     def put(role, **fields):
         data['turns'].append({'role': role, **fields}); json_file(file, data)
     put('user', text=text)
@@ -659,7 +659,7 @@ def eye_steps(app, text, end, limit, fresh):
             put('user', text=str(error)); continue
         raw, coord, thought = seen.pop('raw'), seen.get('coordinate'), str(seen.get('thought') or '')
         heading('eye', f"action={seen['action']} coordinate={coord} answer={seen.get('answer')} thought={thought}")
-        put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, answer=seen.get('answer') or '')
+        put('assistant', text=raw, thought=thought, action=seen['action'], coordinate=coord, input=seen['arguments'].get('text') or seen['arguments'].get('keys'), answer=seen.get('answer') or '')
         if seen['action'] in ('terminate', 'ask_user_question'):
             claim = seen.get('answer') or 'Question: ' + str(seen['arguments'].get('question') or '')
             data['verify'] = eye_verify(app, text, claim) if seen['action'] == 'terminate' else 'NO she asked a question'
@@ -825,7 +825,8 @@ def render_prompt(app, sentence, minutes, end):
     budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 5 percent remaining, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
-    fara = eye_log(json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {'open': False, 'turns': []})
+    traj = json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {}
+    fara = eye_log(traj) if traj.get('run') == SET['run'] else 'none this wake' + (f" (the last wake's eye ended {traj.get('stop') or 'terminated'})" if traj else '')
     return '\n\n'.join((MIND.format(budget=budget), 'STORY', json.dumps({'status': status, 'provenance': meta}) + '\n' + (story or '(empty)'), 'CAMPAIGN', campaign or '(empty)', 'FARA', fara, 'LEDGER', newest(ledger), 'MEASURED', json.dumps(packed, ensure_ascii=False), 'LEARNED', learned_line(earlier, ledger), 'BRAIN', brain(sentence), 'TOOLS', tools, 'SENTENCE', sentence.strip()))
 def text_of(message):
     content = (message or {}).get('content') if isinstance(message, dict) else message
