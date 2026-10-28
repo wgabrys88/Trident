@@ -25,7 +25,7 @@ EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
 MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
 On every chat, read FARA and replan. While her log says open, call --eye-file again with the same sentence; it waits for her and never restarts her. Edit organism.py only when this wake's record shows a defect in it. The running process keeps the loaded body. After terminated with verify YES, pass the next subtask sentence. After verify NO, repeat, steps, blank, or interrupted, she stopped without the result: pass a changed sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
-A terminate answer is her claim; the verify line is her second look at a fresh screen. Do not --stop because she says the task is done. --stop only in the last 5 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
+A terminate answer is her claim; the verify line is her second look at a fresh screen. Do not --stop because she says the task is done. --stop only in the last 20 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
 Write the story and this wake's ledger lesson whenever the plan changes. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
 On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
 DOCS = (
@@ -714,7 +714,7 @@ def eye_run(app, path, dry=False):
             data = eye_data(app)
             turns = data.get('turns') or []
             if not data.get('open') and turns and turns[0].get('text') == text: break
-            time.sleep(2)
+            time.sleep(30)
         return {'log': eye_log(eye_data(app))}
     end = float(SET['wake_end']) if SET.get('wake_end') else None
     eye_steps(app, text, end, 8, False)
@@ -825,14 +825,14 @@ def brain(sentence):
     if SET.get('mind_model'):
         return SET['mind_model']
     said = str(sentence).lower()
-    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-medium-fast')
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh')
 def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
     campaign_path = app.work / 'campaign.txt'
     campaign = campaign_path.read_text(encoding='utf-8') if campaign_path.exists() else ''
     current, earlier = journals(app.work, SET['run'])
     status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
-    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 5 percent remaining, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
+    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 20 percent remaining, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
     traj = json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {}
