@@ -8,8 +8,8 @@ NORM, PORT = 1000, 8765
 SET, RUN = {}, None
 HEAD = re.compile(r'(?m)^## (\d\d:\d\d:\d\d) (\S+)(?:[ \t]+([^\n]*))?$')
 WAKE = re.compile(r'(?m)^## wake ')
-COMPONENTS = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'story', 'ledger', 'stop', 'measure', 'map'}
-BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'measure'}
+COMPONENTS = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'launch', 'story', 'ledger', 'stop', 'measure', 'map'}
+BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'launch', 'measure'}
 BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 ACTIONS = ('left_click', 'right_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'key', 'type', 'scroll', 'hscroll', 'wait', 'terminate')
 POINTER = ACTIONS[:6]
@@ -23,7 +23,9 @@ MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001
 KEYUP, EXTENDED = 0x0002, 0x0001
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
-MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section and --windows are the desktop views. The sentence at the bottom is the only assignment. USE ALL OF YOUR CAPABILITIES.'''
+MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section and --windows are the desktop views. The sentence at the bottom is the only assignment. USE ALL OF YOUR CAPABILITIES.
+
+{budget}'''
 DOCS = (
 '--eye-file PATH. Write the current subtask sentence. While the wake eye is live, wait up to 25 seconds for her to finish, then return her log. Otherwise Fara runs until she terminates or 20 actions. Each call returns only her turns since your last call.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
@@ -31,6 +33,7 @@ DOCS = (
 '--windows. List titled windows. A minimized window has box null.',
 '--region NONE or LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen.',
 '--place HWND LEFT TOP RIGHT BOTTOM. Move a window only when the sentence asks.',
+'--launch COMMAND. Start a program outside the wake job so its window survives the turn. A shell-started window is killed when the turn ends.',
 '--learn. Count headings in earlier run markdown files.',
 '--stop. Write the stop file. The mind gets up to 60 seconds, or less if the deadline is sooner.',
 '--mind-file PATH. Run the sentence until a result, failure, stop, or deadline.',
@@ -46,7 +49,7 @@ def bind(name, table):
 INT, PTR = W.INT, ctypes.POINTER
 user32 = bind('user32', [('GetDC', W.HDC, W.HWND), ('ReleaseDC', INT, W.HWND, W.HDC), ('GetSystemMetrics', INT, INT), ('GetCursorPos', W.BOOL, PTR(W.POINT)), ('SendInput', ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p, INT), ('VkKeyScanW', ctypes.c_short, W.WCHAR), ('EnumWindows', W.BOOL, ctypes.c_void_p, W.LPARAM), ('GetForegroundWindow', W.HWND), ('GetWindowTextW', INT, W.HWND, W.LPWSTR, INT), ('GetWindowTextLengthW', INT, W.HWND), ('IsWindowVisible', W.BOOL, W.HWND), ('IsIconic', W.BOOL, W.HWND), ('GetWindowRect', W.BOOL, W.HWND, PTR(W.RECT)), ('GetWindowThreadProcessId', W.DWORD, W.HWND, PTR(W.DWORD)), ('GetWindowLongW', W.LONG, W.HWND, INT), ('ShowWindow', W.BOOL, W.HWND, INT), ('SetWindowPos', W.BOOL, W.HWND, ctypes.c_void_p, INT, INT, INT, INT, W.UINT)])
 gdi32 = bind('gdi32', [('CreateCompatibleDC', W.HDC, W.HDC), ('CreateDIBSection', W.HBITMAP, W.HDC, ctypes.c_void_p, W.UINT, PTR(ctypes.c_void_p), W.HANDLE, W.DWORD), ('SelectObject', W.HGDIOBJ, W.HDC, W.HGDIOBJ), ('DeleteObject', W.BOOL, W.HGDIOBJ), ('DeleteDC', W.BOOL, W.HDC), ('BitBlt', W.BOOL, W.HDC, INT, INT, INT, INT, W.HDC, INT, INT, W.DWORD), ('StretchBlt', W.BOOL, W.HDC, INT, INT, INT, INT, W.HDC, INT, INT, INT, INT, W.DWORD), ('SetStretchBltMode', INT, W.HDC, INT), ('SetBrushOrgEx', W.BOOL, W.HDC, INT, INT, ctypes.c_void_p)])
-kernel32 = bind('kernel32', [('CreateJobObjectW', W.HANDLE, W.LPVOID, W.LPCWSTR), ('OpenJobObjectW', W.HANDLE, W.DWORD, W.BOOL, W.LPCWSTR), ('SetInformationJobObject', W.BOOL, W.HANDLE, INT, W.LPVOID, W.DWORD), ('AssignProcessToJobObject', W.BOOL, W.HANDLE, W.HANDLE), ('CloseHandle', W.BOOL, W.HANDLE), ('GetCurrentProcess', W.HANDLE)])
+kernel32 = bind('kernel32', [('CreateJobObjectW', W.HANDLE, W.LPVOID, W.LPCWSTR), ('OpenJobObjectW', W.HANDLE, W.DWORD, W.BOOL, W.LPCWSTR), ('SetInformationJobObject', W.BOOL, W.HANDLE, INT, W.LPVOID, W.DWORD), ('QueryInformationJobObject', W.BOOL, W.HANDLE, INT, W.LPVOID, W.DWORD, PTR(W.DWORD)), ('AssignProcessToJobObject', W.BOOL, W.HANDLE, W.HANDLE), ('OpenProcess', W.HANDLE, W.DWORD, W.BOOL, W.DWORD), ('TerminateProcess', W.BOOL, W.HANDLE, W.UINT), ('QueryFullProcessImageNameW', W.BOOL, W.HANDLE, W.DWORD, W.LPWSTR, PTR(W.DWORD)), ('CloseHandle', W.BOOL, W.HANDLE), ('GetCurrentProcess', W.HANDLE)])
 dwmapi = bind('dwmapi', [('DwmGetWindowAttribute', ctypes.c_long, W.HWND, W.DWORD, ctypes.c_void_p, W.DWORD)])
 try:
     ctypes.WinDLL('shcore').SetProcessDpiAwareness(2)
@@ -67,6 +70,8 @@ class JobBasicLimits(ctypes.Structure):
     _fields_ = [('PerProcessUserTimeLimit', ctypes.c_int64), ('PerJobUserTimeLimit', ctypes.c_int64), ('LimitFlags', W.DWORD), ('MinimumWorkingSetSize', ctypes.c_size_t), ('MaximumWorkingSetSize', ctypes.c_size_t), ('ActiveProcessLimit', W.DWORD), ('Affinity', ctypes.c_size_t), ('PriorityClass', W.DWORD), ('SchedulingClass', W.DWORD)]
 class JobLimits(ctypes.Structure):
     _fields_ = [('BasicLimitInformation', JobBasicLimits), ('IoInfo', ctypes.c_uint64 * 6), ('ProcessMemoryLimit', ctypes.c_size_t), ('JobMemoryLimit', ctypes.c_size_t), ('PeakProcessMemoryUsed', ctypes.c_size_t), ('PeakJobMemoryUsed', ctypes.c_size_t)]
+class JobProcessList(ctypes.Structure):
+    _fields_ = [('assigned', W.DWORD), ('count', W.DWORD), ('ids', ctypes.c_size_t * 128)]
 def boot(name, argv):
     handle = kernel32.OpenJobObjectW(0x0001, False, name)
     if not handle:
@@ -353,7 +358,8 @@ class Desk:
             for vk in reversed(held):
                 self._key(vk, up=True)
     def type_text(self, value):
-        subprocess.run(['powershell.exe', '-NoProfile', '-Command', 'Set-Clipboard -Value ([Console]::In.ReadToEnd())'], input=str(value).encode(), capture_output=True, check=True, creationflags=0x08000000)
+        encoded = base64.b64encode(str(value).encode('utf-16le')).decode('ascii')
+        subprocess.run(['powershell.exe', '-NoProfile', '-Command', "Set-Clipboard -Value ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + encoded + "')))"], capture_output=True, check=True, creationflags=0x08000000)
         self.key('ctrl+v')
     def grab(self):
         width, height = screen_size()
@@ -440,14 +446,29 @@ class Desk:
         user32.ShowWindow(int(hwnd), 9)
         return {'hwnd': int(hwnd), 'box': [left, top, right, bottom], 'moved': bool(user32.SetWindowPos(int(hwnd), ctypes.c_void_p(-2), left * width // NORM, top * height // NORM, max((right - left) * width // NORM, 1), max((bottom - top) * height // NORM, 1), 0x0040))}
     def open_job(self, name=None):
-        job, limits = kernel32.CreateJobObjectW(None, name), JobLimits()
-        limits.BasicLimitInformation.LimitFlags = 0x2000
-        if not (job and kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))):
-            self.close_job(job)
+        job = kernel32.CreateJobObjectW(None, name)
+        if not job:
             raise Fail('the wake could not open a job')
         return job
     def close_job(self, job):
-        if job: kernel32.CloseHandle(job)
+        if not job: return
+        info = JobProcessList()
+        if kernel32.QueryInformationJobObject(job, 3, ctypes.byref(info), ctypes.sizeof(info), None):
+            for pid in list(info.ids)[:max(0, min(int(info.count), 128))]:
+                proc = kernel32.OpenProcess(0x1001, False, int(pid) & 0xFFFFFFFF)
+                if not proc: continue
+                try:
+                    name, size = ctypes.create_unicode_buffer(520), W.DWORD(520)
+                    base = Path(name.value).name.lower() if kernel32.QueryFullProcessImageNameW(proc, 0, name, ctypes.byref(size)) else ''
+                    if base != 'notepad.exe' and not base.startswith('chrome'):
+                        kernel32.TerminateProcess(proc, 1)
+                finally:
+                    kernel32.CloseHandle(proc)
+        else:
+            limits = JobLimits()
+            limits.BasicLimitInformation.LimitFlags = 0x2000
+            kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))
+        kernel32.CloseHandle(job)
 def fit_size(width, height):
     if min(width, height) <= 0 or max(width, height) / min(width, height) > 200:
         raise Fail('the capture has a bad shape')
@@ -553,6 +574,14 @@ def target_window(screen, point):
     return None
 def foreground_of(screen):
     return next(({key: window[key] for key in ('hwnd', 'pid', 'pixel_box')} for window in screen['windows'] if window.get('foreground')), None)
+def outside(screen, goal, action):
+    name = next((part for part in ('notepad', 'chrome') if part in str(goal).lower()), '')
+    if not name: return ''
+    box = screen.get('box') or [0, 0, 0, 0]
+    hit = [row for row in screen.get('windows') or [] if name in (row.get('title') or '').lower() and row.get('pixel_box') and row['pixel_box'][0] < box[2] and row['pixel_box'][2] > box[0] and row['pixel_box'][1] < box[3] and row['pixel_box'][3] > box[1]]
+    if not hit: return name + ' is outside the capture'
+    if action in ('key', 'type') and not any(row.get('foreground') for row in hit): return name + ' is not the foreground window'
+    return ''
 def action_path(work, action_id):
     if not re.fullmatch(r'[0-9a-f]{32}', str(action_id)):
         raise Fail('invalid action id')
@@ -622,8 +651,13 @@ def eye_log(data, since=0):
 def eye_verify(app, text, claim):
     shot = app.desk.capture()
     if shot.get('blank'): return 'NO blank capture'
+    titles = ' | '.join(row.get('title') or '' for row in shot.get('windows') or [])
+    low_text, low_titles = text.lower(), titles.lower()
+    for name in ('notepad', 'chrome'):
+        if name in low_text and name not in low_titles:
+            return f'NO {name} is not open: {titles}'
     screen, image = load_capture(app.work)
-    ask_text = f'Do not act. Only look at this screenshot. The task was: "{text}". The claim was: "{claim}". Is the task done on the screen now? Terminate with an answer that starts with YES or NO, then say what you see.'
+    ask_text = f'Do not act. Only look at this screenshot. The task was: "{text}". The claim was: "{claim}". Open windows: {titles}. Is the task done on the screen now? Answer NO if any required line, tab, or window is missing. Terminate with an answer that starts with YES or NO, then say what you see.'
     try: seen = ask(app, image, screen, [{'role': 'user', 'text': ask_text, 'shot': shot['id']}])
     except Fail as error: return f'NO verdict: {error}'
     return seen['answer'] if seen['action'] == 'terminate' else f"NO verdict: she chose {seen['action']} instead of looking"
@@ -638,11 +672,20 @@ def eye_steps(app, text, end, limit, fresh):
     def put(role, **fields):
         data['turns'].append({'role': role, 't': time.time(), **fields}); json_file(file, data)
     put('user', text=text)
-    steps, live, limit = 0, limit is None, limit or EYE_STEPS
+    steps, live = 0, limit is None
+    if not live:
+        limit = limit or EYE_STEPS
     def stop(reason):
         data['open'], data['stop'] = False, reason; json_file(file, data); heading('eye', 'stop=' + reason); return reason
-    while not eye_halted(app, end) and steps < limit:
+    while not eye_halted(app, end) and (live or steps < limit):
         if live and not (app.work / 'eye.live').exists(): break
+        if live:
+            try:
+                current = (app.work / 'eye_now.txt').read_text(encoding='utf-8').strip()
+            except OSError:
+                current = text
+            if current != text:
+                return stop('redirect')
         steps += 1
         last = data['turns'][-1]
         if last.get('role') != 'user' or not last.get('shot'):
@@ -677,6 +720,9 @@ def eye_steps(app, text, end, limit, fresh):
         if repeats >= 2: return stop('repeat')
         if repeats:
             put('user', text=f"Not done. {seen['action']} at {coord} already happened. Choose another action or another coordinate."); continue
+        miss = outside(screen, text, seen['action'])
+        if miss:
+            put('user', text='Not done. ' + miss); continue
         try:
             seen['goal'] = text
             execute(app.desk, store_action(app, screen, image, seen)['program'].split()[-1])
@@ -687,7 +733,7 @@ def eye_steps(app, text, end, limit, fresh):
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
             if halted: break
-    return stop('steps') if steps >= limit and data.get('open') and not eye_halted(app, end) else 'halted'
+    return stop('steps') if not live and steps >= limit and data.get('open') and not eye_halted(app, end) else 'halted'
 def eye_data(app):
     file = app.work / 'fara_traj.json'
     return json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
@@ -696,9 +742,9 @@ def eye_watch(app, end):
     while (app.work / 'eye.live').exists() and not eye_halted(app, end):
         try: stamp, sentence = path.stat().st_mtime, path.read_text(encoding='utf-8').strip()
         except OSError: stamp, sentence = 0, ''
-        if not sentence or stamp < born or sentence == finished:
+        if not sentence or stamp < born or (sentence, stamp) == finished:
             time.sleep(0.4); continue
-        eye_steps(app, sentence, end, None, True); finished = sentence
+        eye_steps(app, sentence, end, None, True); finished = (sentence, stamp)
 def eye_run(app, path, dry=False):
     text = read_file(path).strip()
     if not text: raise Fail('the eye file is empty')
@@ -724,6 +770,15 @@ def eye_new(app):
     since = seen.get('n', 0) if born is not None and seen.get('born') == born else 0
     json_file(seen_path, {'born': born, 'n': len(turns)})
     return (f'{since} earlier turns already returned\n' if since else '') + eye_log(data, since)
+def launch_run(app, command, dry=False):
+    command = str(command).strip()
+    if not command: raise Fail('launch needs a command')
+    if dry: return {'command': command, 'pid': None}
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-Command', "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:TRIDENT_LAUNCH }; if ($r.ReturnValue -ne 0) { exit $r.ReturnValue }; $r.ProcessId"], capture_output=True, text=True, env=os.environ | {'TRIDENT_LAUNCH': command}, creationflags=0x08000000)
+    pid = (result.stdout or '').strip().splitlines()
+    if result.returncode != 0 or not pid or not pid[-1].isdigit():
+        raise Fail('launch failed: ' + ((result.stderr or result.stdout or '').strip()[:240]))
+    return {'command': command, 'pid': int(pid[-1])}
 def windows_run(app, _arg, dry=False): return {'windows': app.desk.windows()}
 def region_run(app, value, dry=False):
     value = str(value or 'NONE').strip()
@@ -1022,7 +1077,7 @@ def mind_run(app, path, dry=False):
     return drive(app, sentence, minutes)
 TOOLS = (
     ('eye', 'eye_file', eye_run, 'text'), ('story', 'story_file', story_run, 'text'), ('ledger', 'ledger_file', ledger_run, 'text'),
-    ('windows', 'windows', windows_run, 'bool'), ('region', 'region', region_run, 'text'), ('place', 'place', place_run, 'place'),
+    ('windows', 'windows', windows_run, 'bool'), ('region', 'region', region_run, 'text'), ('place', 'place', place_run, 'place'), ('launch', 'launch', launch_run, 'text'),
     ('learn', 'learn', learn_run, 'bool'), ('stop', 'stop', stop_run, 'bool'), ('mind', 'mind_file', mind_run, 'text'), ('map', 'map', map_run, 'bool'),
 )
 class App:
