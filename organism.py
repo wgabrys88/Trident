@@ -576,7 +576,7 @@ def execute(desk, action_id):
             raise Fail('stale or consumed action')
         if (desk.work / 'stop').exists() or (SET.get('wake_end') and time.time() >= float(SET['wake_end'])):
             raise Fail('wake stopped or deadline reached')
-        desk.capture()
+        if desk.capture().get('blank'): raise Fail('blank capture')
         fresh, image = load_capture(desk.work)
         original, result = record['screen'], record['result']
         args, action = result['arguments'], result['action']
@@ -616,7 +616,7 @@ def execute(desk, action_id):
                 del desk.action_box
 def eye_log(data):
     rows = [f"action={t.get('action')} coordinate={t.get('coordinate')}{' input=' + json.dumps(t['input']) if t.get('input') else ''} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
-    state = 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
+    state = f"open, no new row for {int(time.time() - max(t.get('t', 0) for t in data['turns']))} s" if data.get('open') and data.get('turns') and data['turns'][-1].get('t') else 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
     return state + '\n' + '\n'.join(rows) + (f"\nverify={data['verify']}" if data.get('verify') else '')
 def eye_verify(app, text, claim):
     shot = app.desk.capture()
@@ -635,7 +635,7 @@ def eye_steps(app, text, end, limit, fresh):
         data = json.loads(file.read_text(encoding='utf-8')) if file.exists() else {'open': False, 'turns': []}
         data = data if data.get('open') else {'open': True, 'turns': [], 'run': SET['run']}
     def put(role, **fields):
-        data['turns'].append({'role': role, **fields}); json_file(file, data)
+        data['turns'].append({'role': role, 't': time.time(), **fields}); json_file(file, data)
     put('user', text=text)
     steps, live, limit = 0, limit is None, limit or EYE_STEPS
     def stop(reason):
@@ -668,7 +668,9 @@ def eye_steps(app, text, end, limit, fresh):
         if live and not (app.work / 'eye.live').exists(): break
         if seen['action'] in FARA_ONLY:
             put('user', text='Done. Fact kept.' if seen['action'] == 'pause_and_memorize_fact' else f"Not done. {seen['action']} is not available. This is a Windows desktop, not a browser."); continue
-        repeats = sum(1 for turn in data['turns'][:-1] if turn.get('role') == 'assistant' and turn.get('action') == seen['action'] and turn.get('coordinate') == coord and coord is not None)
+        done = app.__dict__.setdefault('done', [])
+        repeats = done.count((seen['action'], str(coord))) if coord is not None else 0
+        done.append((seen['action'], str(coord)))
         if repeats >= 2: return stop('repeat')
         if repeats:
             put('user', text=f"Not done. {seen['action']} at {coord} already happened. Choose another action or another coordinate."); continue
@@ -678,6 +680,7 @@ def eye_steps(app, text, end, limit, fresh):
             time.sleep(float(SET.get('shot_delay') or 1.5))
             put('user', text=f"Done. action={seen['action']} coordinate={coord}")
         except Fail as error:
+            if 'blank capture' in str(error): return stop('blank')
             halted = 'stopped' in str(error) or 'deadline' in str(error)
             put('user', text=f'Not done. {error}', **({} if halted else {'shot': app.desk.capture().get('id')}))
             if halted: break
