@@ -23,13 +23,13 @@ MOVE, LEFT_DOWN, LEFT_UP, RIGHT_DOWN, RIGHT_UP, WHEEL, HWHEEL, ABSOLUTE = 0x0001
 KEYUP, EXTENDED = 0x0002, 0x0001
 EXTENDED_VKS = frozenset((0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E))
 VK = {'enter': 0x0D, 'return': 0x0D, 'tab': 0x09, 'escape': 0x1B, 'esc': 0x1B, 'backspace': 0x08, 'delete': 0x2E, 'del': 0x2E, 'insert': 0x2D, 'home': 0x24, 'end': 0x23, 'pageup': 0x21, 'pagedown': 0x22, 'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27, 'ctrl': 0x11, 'control': 0x11, 'alt': 0x12, 'shift': 0x10, 'win': 0x5B, 'windows': 0x5B, 'space': 0x20} | {f'f{i}': 0x6F + i for i in range(1, 13)} | {c: ord(c.upper()) for c in 'abcdefghijklmnopqrstuvwxyz0123456789'}
-MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section is the only desktop view. The sentence at the bottom is the only assignment.
-On every chat, read FARA and replan. While her log says open, call --eye-file again with the same sentence; it waits for her and never restarts her. Edit organism.py only when this wake's record shows a defect in it. The running process keeps the loaded body. After terminated with verify YES, pass the next subtask sentence. After verify NO, repeat, steps, blank, or interrupted, she stopped without the result: pass a changed sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file, --capture, or --region. Do not invent a point. Coordinates come only from her log.
-A terminate answer is her claim; the verify line is her second look at a fresh screen. Do not --stop because she says the task is done. --stop only in the last 20 percent, after the story and one ledger lesson. A line count over 1000 is not a defect.
+MIND = '''You are the Trident organism. main.py starts you. organism.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. The FARA section and --windows are the desktop views. The sentence at the bottom is the only assignment.
+On every chat, call --windows first, read FARA, and replan; a window an earlier chat opened may be gone, so trust only this chat's --windows. While her log says open, call --eye-file again with the same sentence; it waits for her and never restarts her. Edit organism.py only when this wake's record shows a defect in it. The running process keeps the loaded body. After terminated with verify YES, pass the next subtask sentence. After verify NO, repeat, steps, blank, or interrupted, she stopped without the result: pass a changed sentence. Only the current sentence goes to --eye-file. Do not open shots/, images, or the screen. Do not call --hands-file or --capture. Do not invent a point. Coordinates come only from her log.
+A terminate answer is her claim; the verify line is her second look at a fresh screen. Do not --stop because she says the task is done. --stop only in the closing window given below, after the story and one ledger lesson. A line count over 1000 is not a defect.
 Write the story and this wake's ledger lesson whenever the plan changes. {budget} Do not claim a result without a record from this wake. Do not move a window the sentence leaves alone. Do not delete agent/, shots/, actions/, or streams/.
 On 27 October 2026, other public products named Trident were a security console, a chat application, and a three-role review loop. They are not this process.'''
 DOCS = (
-'--eye-file PATH. Write the current subtask sentence. While the wake eye is live, wait up to 25 seconds for her to finish, then return her log. Otherwise Fara runs until she terminates or 8 actions.',
+'--eye-file PATH. Write the current subtask sentence. While the wake eye is live, wait up to 25 seconds for her to finish, then return her log. Otherwise Fara runs until she terminates or 20 actions. Each call returns only her turns since your last call.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
 '--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
 '--windows. List titled windows. A minimized window has box null.',
@@ -619,8 +619,8 @@ def execute(desk, action_id):
         finally:
             if hasattr(desk, 'action_box'):
                 del desk.action_box
-def eye_log(data):
-    rows = [f"action={t.get('action')} coordinate={t.get('coordinate')}{' input=' + json.dumps(t['input']) if t.get('input') else ''} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or []) if t.get('role') == 'assistant']
+def eye_log(data, since=0):
+    rows = [f"action={t.get('action')} coordinate={t.get('coordinate')}{' input=' + json.dumps(t['input']) if t.get('input') else ''} answer={t.get('answer')} thought={t.get('thought')}" for t in (data.get('turns') or [])[since:] if t.get('role') == 'assistant']
     state = f"open, no new turn for {int(time.time() - max(t.get('t', 0) for t in data['turns']))} s" if data.get('open') and data.get('turns') and data['turns'][-1].get('t') else 'open' if data.get('open') else data.get('stop') or ('terminated' if rows else 'none this wake')
     return state + '\n' + '\n'.join(rows) + (f"\nverify={data['verify']}" if data.get('verify') else '')
 def eye_verify(app, text, claim):
@@ -714,11 +714,20 @@ def eye_run(app, path, dry=False):
             data = eye_data(app)
             turns = data.get('turns') or []
             if not data.get('open') and turns and turns[0].get('text') == text: break
-            time.sleep(30)
-        return {'log': eye_log(eye_data(app))}
+            time.sleep(2)
+        return {'log': eye_new(app)}
     end = float(SET['wake_end']) if SET.get('wake_end') else None
-    eye_steps(app, text, end, 8, False)
-    return {'log': eye_log(eye_data(app))}
+    eye_steps(app, text, end, EYE_STEPS, False)
+    return {'log': eye_new(app)}
+def eye_new(app):
+    data, seen_path = eye_data(app), app.work / 'eye_seen.json'
+    turns = data.get('turns') or []
+    try: seen = json.loads(seen_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError): seen = {}
+    born = turns[0].get('t') if turns else None
+    since = seen.get('n', 0) if born is not None and seen.get('born') == born else 0
+    json_file(seen_path, {'born': born, 'n': len(turns)})
+    return (f'{since} earlier turns already returned\n' if since else '') + eye_log(data, since)
 def windows_run(app, _arg, dry=False): return {'windows': app.desk.windows()}
 def region_run(app, value, dry=False):
     value = str(value or 'NONE').strip()
@@ -832,7 +841,7 @@ def render_prompt(app, sentence, minutes, end):
     campaign = campaign_path.read_text(encoding='utf-8') if campaign_path.exists() else ''
     current, earlier = journals(app.work, SET['run'])
     status = 'current wake' if meta.get('run') == SET['run'] else 'inherited; not current progress'
-    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. Under 20 percent remaining, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
+    budget = f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. From {time.strftime("%H:%M:%S", time.localtime(end - max(.05 * float(minutes), 2) * 60))} on, stop new work, write the story and one ledger lesson, and stop. A terminate answer is her claim, not a reason to stop early.' if minutes else 'No end time was given.'
     packed = {'current': current, 'historical': earlier, 'lesson_status': 'Counts come from run markdown headings.'}
     tools = command() + '\nEach tool below is that command plus the flag on its first line.\n' + '\n'.join(DOCS)
     traj = json.loads((app.work / 'fara_traj.json').read_text(encoding='utf-8')) if (app.work / 'fara_traj.json').exists() else {}
