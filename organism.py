@@ -671,7 +671,7 @@ def eye_steps(app, text, end, limit, fresh):
             put('user', text='Done. Fact kept.' if seen['action'] == 'pause_and_memorize_fact' else f"Not done. {seen['action']} is not available. This is a Windows desktop, not a browser."); continue
         done = app.__dict__.setdefault('done', [])
         key = (seen['action'], str(coord), str(seen['arguments'].get('text') or seen['arguments'].get('keys') or ''), screen.get('sha256'))
-        repeats = done.count(key) if coord is not None else 0
+        repeats = done.count(key)
         done.append(key)
         if repeats >= 2: return stop('repeat')
         if repeats:
@@ -989,8 +989,6 @@ def drive(app, sentence, minutes):
                     proc.kill()
                     proc.wait(timeout=5)
                 heading('agent-exit', outcome)
-                if proc.stdout:
-                    proc.stdout.close()
                 proc = None
             if outcome != 'rotate': break
         else:
