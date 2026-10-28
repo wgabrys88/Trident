@@ -113,7 +113,12 @@ def atomic(path, value):
             handle.write(value if isinstance(value, bytes) else value.encode('utf-8'))
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp, path)
+        for attempt in range(40):
+            try:
+                os.replace(temp, path); break
+            except PermissionError:
+                if attempt == 39: raise
+                time.sleep(0.05)
     finally:
         temp.unlink(missing_ok=True)
 def json_file(path, value):
@@ -709,7 +714,7 @@ def eye_run(app, path, dry=False):
             data = eye_data(app)
             turns = data.get('turns') or []
             if not data.get('open') and turns and turns[0].get('text') == text: break
-            time.sleep(0.5)
+            time.sleep(2)
         return {'log': eye_log(eye_data(app))}
     end = float(SET['wake_end']) if SET.get('wake_end') else None
     eye_steps(app, text, end, 8, False)
