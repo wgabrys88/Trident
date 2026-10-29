@@ -29,7 +29,7 @@ MIND = '''You are the Trident organism. main.py starts you. organism.py is your 
 DOCS = (
 '--eye-file PATH. Write the current subtask sentence. While the wake eye is live, wait up to 25 seconds for her to finish, then return her log. Otherwise Fara runs until she terminates or 20 actions. Each call returns only her turns since your last call.',
 '--story-file PATH. Replace story.txt. The next prompt includes it.',
-'--ledger-file PATH. Replace this wake lesson, 1-1200 characters.',
+'--ledger-file PATH. Replace this wake lesson, 1-7200 characters.',
 '--windows. List titled windows. A minimized window has box null.',
 '--region NONE or LEFT,TOP,RIGHT,BOTTOM on a 0-1000 screen.',
 '--place HWND LEFT TOP RIGHT BOTTOM. Move a window only when the sentence asks.',
@@ -830,8 +830,8 @@ def newest(ledger):
     return 'There is no ledger lesson yet.' if len(parts) < 2 else '## wake ' + parts[-1].strip()
 def _enter(work, lesson, state):
     lesson = WAKE.sub('', str(lesson)).strip() or 'No lesson was written.'
-    if len(lesson) > 1200:
-        raise Fail('a lesson has 1-1200 characters')
+    if len(lesson) > 7200:
+        raise Fail('a lesson has 1-7200 characters')
     path = Path(work) / 'ledger.md'
     previous = path.read_text(encoding='utf-8') if path.exists() else ''
     parts = WAKE.split(previous)[1:]
@@ -862,8 +862,8 @@ def story_run(app, path, dry=False):
     return {'story_len': len(text)}
 def ledger_run(app, path, dry=False):
     text = read_file(path).strip()
-    if not text or len(text) > 1200:
-        raise Fail('a lesson has 1-1200 characters')
+    if not text or len(text) > 7200:
+        raise Fail('a lesson has 1-7200 characters')
     return enter(app.work, text, 'open')
 def learn_run(app, _arg, dry=False):
     _current, earlier = journals(app.work, SET['run'])
@@ -885,7 +885,7 @@ def brain(sentence):
     if SET.get('mind_model'):
         return SET['mind_model']
     said = str(sentence).lower()
-    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh')
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh-fast')
 def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
     campaign_path = app.work / 'campaign.txt'
@@ -993,7 +993,7 @@ def read_agent(proc, app, end):
             running = max(0, running - 1)
             calls += 1
             heading('tool', json.dumps(lean(item.get('tool_call') or {}), ensure_ascii=False))
-            if calls >= 42 and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
+            if calls >= 112 and running == 0 and not (app.work / 'stop').exists() and not (end and time.time() >= end):
                 return finish('rotate')
         elif kind == 'system' and sub == 'init':
             heading('start', str(item.get('model') or ''))
