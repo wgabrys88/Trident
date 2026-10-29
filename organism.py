@@ -193,7 +193,7 @@ def heading(kind, text=''):
 def brief_result(kind, body):
     if kind == 'windows':
         rows = body.get('windows') or []
-        return f"count={len(rows)} " + '; '.join(f"{row.get('hwnd')}|{row.get('title')}|{row.get('box')}" for row in rows)
+        return f"count={len(rows)} " + '; '.join(f"{row.get('hwnd')}|{row.get('title')}|{row.get('box')}|px={row.get('pixel_box')}" for row in rows)
     if kind in ('capture', 'hands'):
         return f"id={body.get('id')} size={body.get('size')} cursor={body.get('cursor')}"
     if kind == 'eye':
@@ -326,6 +326,33 @@ class Desk:
                     time.sleep(0.012)
         finally:
             send(LEFT_UP)
+    def brush_pixels(self, pixels, dwell=0.004):
+        if len(pixels) < 2:
+            raise Fail('brush needs two points')
+        pixels = [(int(x), int(y)) for x, y in pixels]
+        send(LEFT_UP)
+        send(MOVE, *pixels[0], absolute=True)
+        try:
+            send(LEFT_DOWN, *pixels[0], absolute=True)
+            if dwell:
+                time.sleep(dwell)
+            for px, py in pixels[1:]:
+                send(MOVE, px, py, absolute=True)
+                if dwell:
+                    time.sleep(dwell)
+        finally:
+            send(LEFT_UP)
+    def click_pixel(self, px, py, times=1):
+        px, py = int(px), int(py)
+        send(MOVE, px, py, absolute=True)
+        time.sleep(0.02)
+        for _ in range(max(1, times)):
+            try:
+                send(LEFT_DOWN, px, py, absolute=True)
+                time.sleep(0.02)
+            finally:
+                send(LEFT_UP, px, py, absolute=True)
+            time.sleep(0.03 if times > 1 else 0)
     def wheel(self, amount, horizontal=False):
         if amount: send(HWHEEL if horizontal else WHEEL, data=int(amount))
     def _key(self, vk, up=False):
@@ -345,6 +372,13 @@ class Desk:
                 code = user32.VkKeyScanW(name)
                 if code == -1:
                     raise Fail(f'unmappable character: {name!r}')
+                shift = (code >> 8) & 0xFF
+                if shift & 1:
+                    codes.append(VK['shift'])
+                if shift & 2:
+                    codes.append(VK['ctrl'])
+                if shift & 4:
+                    codes.append(VK['alt'])
                 codes.append(code & 0xFF)
             else:
                 raise Fail(f'unknown key: {name}')
@@ -915,7 +949,7 @@ def spawn(app, model, prompt_path, job_name):
     (vendor / 'data').mkdir(parents=True, exist_ok=True)
     temp = CODE.parent / 'temp'
     temp.mkdir(exist_ok=True)
-    (profile / 'cli-config.json').write_text(json.dumps({'version': 1, 'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': ['Read(shots/**)', 'Read(**/*.png)']}, 'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True}), encoding='utf-8')
+    (profile / 'cli-config.json').write_text(json.dumps({'version': 1, 'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': []}, 'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True}), encoding='utf-8')
     versions = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions'
     folders = [path for path in versions.iterdir() if path.name[:1].isdigit() and (path / 'index.js').exists()] if versions.exists() else []
     if not folders:
