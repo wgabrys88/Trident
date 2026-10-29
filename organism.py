@@ -10,7 +10,8 @@ HEAD = re.compile(r'(?m)^## (\d\d:\d\d:\d\d) (\S+)(?:[ \t]+([^\n]*))?$')
 WAKE = re.compile(r'(?m)^## wake ')
 COMPONENTS = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'launch', 'story', 'ledger', 'stop', 'measure', 'map'}
 BLOCKED = {'eye', 'decide', 'hands', 'capture', 'windows', 'region', 'place', 'launch', 'measure'}
-BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', 'grok-4.7-medium-fast', 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
+DEFAULT_BRAIN = 'grok-4.7-medium-fast'
+BRAINS = ('grok-4.7-low', 'grok-4.7-low-fast', 'grok-4.7-medium', DEFAULT_BRAIN, 'grok-4.7-high', 'grok-4.7-high-fast', 'grok-4.7-xhigh', 'grok-4.7-xhigh-fast')
 ACTIONS = ('left_click', 'right_click', 'double_click', 'triple_click', 'mouse_move', 'left_click_drag', 'key', 'type', 'scroll', 'hscroll', 'wait', 'terminate')
 POINTER = ACTIONS[:6]
 FARA_ONLY = ('visit_url', 'history_back', 'web_search', 'read_page_answer_question', 'pause_and_memorize_fact', 'ask_user_question')
@@ -919,7 +920,7 @@ def brain(sentence):
     if SET.get('mind_model'):
         return SET['mind_model']
     said = str(sentence).lower()
-    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), 'grok-4.7-xhigh-fast')
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in said), DEFAULT_BRAIN)
 def render_prompt(app, sentence, minutes, end):
     story, ledger, meta = snapshot(app.work)
     campaign_path = app.work / 'campaign.txt'
@@ -944,6 +945,8 @@ def lean(node, keep=None):
     drop = {'parsingResult', 'hookAdditionalContexts'}
     return {key: lean(value, keep) if isinstance(value, (dict, list)) else value for key, value in node.items() if key not in drop and not (key == 'interleavedOutput' and value == node.get('stdout')) and not (key == 'command' and value == keep and 'stdout' in node)}
 def spawn(app, model, prompt_path, job_name):
+    if model not in BRAINS and model != SET.get('mind_model'):
+        raise Fail('unknown mind model: ' + str(model))
     vendor, profile = app.work / 'agent', app.work / 'agent' / 'config'
     profile.mkdir(parents=True, exist_ok=True)
     (vendor / 'data').mkdir(parents=True, exist_ok=True)
