@@ -1,13 +1,10 @@
-"""Trident. One hub, many agents. The sentence is a beat list."""
-from __future__ import annotations
-import ctypes, json, math, os, queue, socket, subprocess, sys, threading, time, urllib.request
-from abc import ABC, abstractmethod
+"""Trident: desktop beats, shared journal, and timed Cursor runs in one file."""
+import argparse, ctypes, json, math, os, queue, re, socket, subprocess, sys, threading, time, urllib.request, uuid
+from collections import Counter
 from ctypes import wintypes
-from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent
-KEY = (ROOT.parent / ".env").read_text(encoding="utf-8").strip()
 PORT, MODEL = 8765, "typesafe/jev-1.14"
 PALETTE = ("#7CFFB2", "#7CC4FF", "#FFD27C", "#FF8FB8", "#C9B6FF", "#FFB07C")
 ENUM = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
@@ -54,14 +51,6 @@ def windows(part):
 def at(hwnd, x, y):
     point = wintypes.POINT(x, y); U.ClientToScreen(hwnd, ctypes.byref(point)); return point.x, point.y
 WATCH = "import ctypes,sys,time\nu=ctypes.WinDLL('user32');u.GetForegroundWindow.restype=ctypes.c_void_p\nu.GetWindowTextW.argtypes=(ctypes.c_void_p,ctypes.c_wchar_p,ctypes.c_int)\nu.GetAsyncKeyState.argtypes=(ctypes.c_int,);u.GetAsyncKeyState.restype=ctypes.c_short\ntitle,vk=sys.argv[1],int(sys.argv[2]);buf=ctypes.create_unicode_buffer(512);last=False\nwhile True:\n h=u.GetForegroundWindow();u.GetWindowTextW(h,buf,512)\n down=bool(u.GetAsyncKeyState(vk)&0x8000)\n if buf.value.lower().endswith(title.lower()) and down and not last: break\n last=down;time.sleep(0.02)\n"
-@dataclass(frozen=True)
-class Beat:
-    verb: str
-    arg: str
-    @staticmethod
-    def parse(line):
-        verb, _, arg = line.strip().partition(" ")
-        return Beat(verb, arg)
 class Live(BaseHTTPRequestHandler):
     fan = None
     def log_message(self, fmt, *args): return
@@ -87,7 +76,7 @@ class Journal:
         self.path.write_text("", encoding="utf-8")
         self.lock, self.boxlock, self.boxes, self.events, self.colors = threading.Lock(), threading.Lock(), [], [], {}
         Live.fan = self
-        self.view = subprocess.Popen(["powershell.exe", "-NoExit", "-NoProfile", "-Command",
+        subprocess.Popen(["powershell.exe", "-NoExit", "-NoProfile", "-Command",
             f"$Host.UI.RawUI.WindowTitle='Trident journal'; Get-Content -LiteralPath '{self.path}' -Wait -Encoding utf8"],
             creationflags=0x10)
     def pin(self):
@@ -108,8 +97,7 @@ class Journal:
     def emit(self, agent, kind, body):
         color = self.colors[agent]
         text = f"## {time.strftime('%H:%M:%S')} {color} {agent} {kind}\n\n" + (body.rstrip() + "\n\n" if body else "")
-        with self.path.open("a", encoding="utf-8") as handle: handle.write(text); handle.flush()
-        sys.stdout.write(text); sys.stdout.flush(); self.events.append((color, text))
+        record(self.path, text); self.events.append((color, text))
         with self.boxlock:
             for box in self.boxes: box.put({"color": color, "text": text})
     def html(self):
@@ -126,27 +114,21 @@ class Journal:
         self.write("hub", "listen", f"http://{self.host}:{PORT}/")
         ThreadingHTTPServer.allow_reuse_address = True
         ThreadingHTTPServer(("0.0.0.0", PORT), Live).serve_forever()
-class Pipe:
-    def write(self, kind, body=""):
-        payload = json.dumps({"agent": str(os.getpid()), "kind": kind, "body": body}).encode()
-        urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/log", data=payload,
-            headers={"Content-Type": "application/json"}), timeout=30).read()
-class Jev:
-    def ask(self, state, questions):
-        req = urllib.request.Request("https://openrouter.ai/api/alpha/decisions", method="POST",
-            data=json.dumps({"model": MODEL, "state": state, "questions": questions}).encode(),
-            headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as res: return json.loads(res.read().decode())["answers"]
-class Hand(ABC):
-    @abstractmethod
-    def run(self, beat): ...
-class Desk(Hand):
-    def __init__(self):
-        self.hwnd = 0
-        self.act = {"open": lambda arg: self.open(arg), "type": lambda arg: self.paste(arg),
-                    "watch": lambda arg: self.watch(arg), "draw": lambda arg: self.draw(arg)}
+def request(url, payload, timeout, headers=None):
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                 headers={**(headers or {}), "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as response: return response.read()
+def log(kind, body=""):
+    request(f"http://127.0.0.1:{PORT}/log", {"agent": str(os.getpid()), "kind": kind, "body": body}, 30)
+def decide(state, questions):
+    key = (ROOT.parent / ".env").read_text(encoding="utf-8").strip()
+    return json.loads(request("https://openrouter.ai/api/alpha/decisions",
+        {"model": MODEL, "state": state, "questions": questions}, 60, {"Authorization": f"Bearer {key}"}))["answers"]
+class Desk:
+    hwnd = 0
     def run(self, beat):
-        return self.act[beat.verb](beat.arg)
+        verb, arg = beat
+        return {"open": self.open, "type": self.paste, "watch": self.watch, "draw": self.draw}[verb](arg)
     def open(self, arg):
         title, command = arg.split("|", 1); subprocess.Popen(command.split()); rows, end = [], time.time() + 20
         while time.time() < end and not rows:
@@ -158,10 +140,10 @@ class Desk(Hand):
         focus(self.hwnd); chord((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)); time.sleep(0.05)
         chord((0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2)); time.sleep(0.5); return "typed"
     def watch(self, arg):
-        title, vk = arg.rsplit(" ", 1); path = ROOT / "_wake.py"; path.write_text(WATCH, encoding="utf-8")
+        title, vk = arg.rsplit(" ", 1)
         self.paste("click the notepad window and hit Enter\n\n" + WATCH)
-        proc = subprocess.Popen([sys.executable, str(path), title, vk], creationflags=0x08000000)
-        proc.wait(); path.unlink(); return f"awake {title.strip()}"
+        proc = subprocess.Popen([sys.executable, "-c", WATCH, title, vk], creationflags=0x08000000)
+        proc.wait(); return f"awake {title.strip()}"
     def draw(self, arg):
         focus(self.hwnd); rect = wintypes.RECT(); U.GetClientRect(self.hwnd, ctypes.byref(rect))
         cx, cy = rect.right // 2, int(rect.bottom * 0.58)
@@ -176,24 +158,273 @@ STRATEGY = {"strategy": {"type": "choice", "instructions": "The beat at index is
                  "skip": "Trace length is greater than index, so that beat was already run.", "halt": "The sentence is finished or must not continue."}}}
 DONE = {"done": {"type": "noul", "instructions": "Does the trace list one result for every beat?",
                  "criteria": {"true": "Trace length equals the number of beats.", "false": "A beat has no result."}}}
-class Organism:
-    def __init__(self):
-        self.journal, self.jev, self.desk = Pipe(), Jev(), Desk()
-    def wake(self, sentence):
-        beats = [Beat.parse(line) for line in sentence.splitlines() if line.strip()]
-        self.journal.write("wake", sentence.strip()); trace, index = [], 0
-        while index < len(beats):
-            state = {"beats": [f"{b.verb} {b.arg}" for b in beats], "index": index, "trace": trace}
-            choice = self.jev.ask(state, STRATEGY)["strategy"]["choice"]
-            self.journal.write("jev", f"{index} {choice}")
-            if choice == "skip": index += 1; continue
-            if choice != "obey": break
-            beat = beats[index]; self.journal.write("run", f"{beat.verb} {beat.arg}")
-            trace.append(self.desk.run(beat)); self.journal.write("did", trace[-1]); index += 1
-        done = self.jev.ask({"beats": [f"{b.verb} {b.arg}" for b in beats], "trace": trace}, DONE)
-        self.journal.write("done", json.dumps(done["done"]))
-def main():
-    if sys.argv[1] == "serve": Journal(ROOT).serve()
-    else: Organism().wake(Path(sys.argv[1]).read_text(encoding="utf-8-sig"))
-if __name__ == "__main__":
+def wake(sentence):
+    beats = [line.strip().partition(" ")[::2] for line in sentence.splitlines() if line.strip()]
+    labels = [f"{verb} {arg}" for verb, arg in beats]
+    desk, trace, index = Desk(), [], 0
+    log("wake", sentence.strip())
+    while index < len(beats):
+        choice = decide({"beats": labels, "index": index, "trace": trace}, STRATEGY)["strategy"]["choice"]
+        log("jev", f"{index} {choice}")
+        if choice == "skip": index += 1; continue
+        if choice != "obey": break
+        log("run", labels[index]); trace.append(desk.run(beats[index]))
+        log("did", trace[-1]); index += 1
+    log("done", json.dumps(decide({"beats": labels, "trace": trace}, DONE)["done"]))
+BRAIN = 'grok-4.7-medium-fast'
+BRAINS = tuple('grok-4.7-' + level + speed for level in ('low', 'medium', 'high', 'xhigh') for speed in ('', '-fast'))
+ROTATE_AT = 42
+STOP_GRACE = 60
+HEAD = re.compile(r'(?m)^## (\d\d:\d\d:\d\d) (\S+)')
+WAKE = re.compile(r'(?m)^## wake ')
+CREATE_NO_WINDOW = 0x08000000
+CREATE_SUSPENDED = 0x00000004
+kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+ntdll = ctypes.WinDLL('ntdll', use_last_error=True)
+kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+kernel32.SetInformationJobObject.restype = wintypes.BOOL
+kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CloseHandle.restype = wintypes.BOOL
+ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+ntdll.NtResumeProcess.restype = ctypes.c_long
+class JobBasicLimits(ctypes.Structure):
+    _fields_ = [
+        ('PerProcessUserTimeLimit', ctypes.c_int64), ('PerJobUserTimeLimit', ctypes.c_int64),
+        ('LimitFlags', wintypes.DWORD), ('MinimumWorkingSetSize', ctypes.c_size_t),
+        ('MaximumWorkingSetSize', ctypes.c_size_t), ('ActiveProcessLimit', wintypes.DWORD),
+        ('Affinity', ctypes.c_size_t), ('PriorityClass', wintypes.DWORD), ('SchedulingClass', wintypes.DWORD),
+    ]
+class JobLimits(ctypes.Structure):
+    _fields_ = [
+        ('BasicLimitInformation', JobBasicLimits), ('IoInfo', ctypes.c_uint64 * 6),
+        ('ProcessMemoryLimit', ctypes.c_size_t), ('JobMemoryLimit', ctypes.c_size_t),
+        ('PeakProcessMemoryUsed', ctypes.c_size_t), ('PeakJobMemoryUsed', ctypes.c_size_t),
+    ]
+def wincheck(ok):
+    if not ok: raise ctypes.WinError(ctypes.get_last_error())
+def read(path):
+    path = Path(path)
+    return path.read_text(encoding='utf-8-sig') if path.is_file() else ''
+def write(path, text):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    temp.write_bytes(text.encode('utf-8') if isinstance(text, str) else text)
+    os.replace(temp, path)
+def record(path, text):
+    with open(path, 'a', encoding='utf-8') as handle: handle.write(text)
+    sys.stdout.write(text); sys.stdout.flush()
+def heading(run, kind, text=''):
+    body = '' if text is None else str(text)
+    record(run, f"## {time.strftime('%H:%M:%S')} {kind}\n\n" + (body + '\n\n' if body else ''))
+def measured(path):
+    heads = list(HEAD.finditer(read(path)))
+    counts = dict(Counter(head.group(2) for head in heads))
+    return {'run': Path(path).stem.removeprefix('run_'), 'source': str(path),
+            'first_event': heads[0].group(1) if heads else None, 'last_event': heads[-1].group(1) if heads else None,
+            'counts': counts, 'recorded_errors': counts.get('err', 0)}
+def learned_line(rows, ledger):
+    errors = sum(row['recorded_errors'] for row in rows)
+    calls = sum(row['counts'].get('tool', 0) for row in rows)
+    names = ', '.join(row['run'] for row in rows)
+    advice = 'Compare the newest ledger line with the run markdown.' if ledger.strip() else 'There is no ledger lesson yet.'
+    return f'{len(rows)} earlier wakes ({names}), {errors} recorded errors, {calls} tool calls. {advice}'
+def newest(ledger):
+    parts = WAKE.split(ledger or '')
+    return '## wake ' + parts[-1].strip() if len(parts) > 1 else 'There is no ledger lesson yet.'
+def choose_brain(sentence, model):
+    if model:
+        if model not in BRAINS: raise SystemExit('unknown mind model: ' + model)
+        return model
+    return next((slug for slug in sorted(BRAINS, key=len, reverse=True) if slug in sentence.lower()), BRAIN)
+def closing_clock(minutes, end):
+    begin = end - max(0.05 * float(minutes), 2) * 60
+    return (f'The wake has {float(minutes):g} minutes and ends at {time.strftime("%H:%M:%S", time.localtime(end))}. '
+            f'From {time.strftime("%H:%M:%S", time.localtime(begin))} on, stop new work, write story.txt and lesson.txt, and write the stop file.')
+def render(work, run, run_id, sentence, minutes, end, model):
+    ledger = read(work / 'ledger.md')
+    prior = [row for path in sorted(work.glob('run_*.md')) if (row := measured(path))['run'] != run_id]
+    parts = [
+        'You are the Trident organism. main.py is your body. story.txt is the plan: a short ordered list of subtasks. campaign.txt is the task list. ledger.md is memory. The run markdown is the record. You act with Cursor\'s own tools. The sentence at the bottom is the only assignment.',
+        closing_clock(minutes, end),
+        'Write story.txt, the whole plan, whenever it changes. Write lesson.txt as this wake\'s one lesson, 1-7200 characters. Write an empty file named stop when the assignment is finished. In the closing window, write those three and do not start new work. Your last message is not completion. The stop file is.',
+        'Programs you start from this chat die when the chat ends. Put anything the next chat must reopen into story.txt. There is no vision server and there are no Trident tool flags.',
+        'STORY', read(work / 'story.txt') or '(empty)',
+        'CAMPAIGN', read(work / 'campaign.txt') or '(empty)',
+        'LEDGER', newest(ledger),
+        'MEASURED', json.dumps({'current': measured(run), 'historical': prior}, ensure_ascii=False),
+        'LEARNED', learned_line(prior, ledger),
+        'BRAIN', model, 'RUN', str(run), 'SENTENCE', sentence.strip(),
+    ]
+    return '\n\n'.join(parts)
+def runtime():
+    versions = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions'
+    folders = [path for path in versions.iterdir() if path.name[:1].isdigit() and (path / 'index.js').exists()]
+    if not folders: raise SystemExit('the agent runtime is not installed')
+    return max(folders)
+def open_job():
+    job = kernel32.CreateJobObjectW(None, None)
+    wincheck(job)
+    limits = JobLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000
+    wincheck(kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
+    return job
+def close_job(job):
+    if job:
+        wincheck(kernel32.CloseHandle(job))
+def launch(work, model, prompt_path, job):
+    folder, vendor = runtime(), work / 'agent'
+    profile = vendor / 'config'
+    profile.mkdir(parents=True, exist_ok=True)
+    (vendor / 'data').mkdir(parents=True, exist_ok=True)
+    (profile / 'cli-config.json').write_text(json.dumps({
+        'version': 1,
+        'permissions': {'allow': ['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'], 'deny': []},
+        'sandbox': {'mode': 'disabled'}, 'approvalMode': 'unrestricted', 'autoAcceptWebSearch': True,
+    }), encoding='utf-8')
+    env = os.environ.copy()
+    env.update(CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'),
+               PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1')
+    env.pop('OPENROUTER_API_KEY', None)
+    argv = [
+        str(folder / 'node.exe'), '-e',
+        "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);",
+        str(folder / 'index.js'), '--trust', '--force', '-p', '--model', model,
+        '--workspace', str(work), '--output-format', 'stream-json', str(prompt_path),
+    ]
+    proc = subprocess.Popen(
+        argv, cwd=str(work), env=env, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        creationflags=CREATE_NO_WINDOW | CREATE_SUSPENDED,
+    )
+    if not kernel32.AssignProcessToJobObject(job, proc._handle):
+        proc.kill()
+        raise ctypes.WinError(ctypes.get_last_error())
+    status = ntdll.NtResumeProcess(proc._handle)
+    if status != 0:
+        proc.kill()
+        raise OSError(f'NtResumeProcess {status:#x}')
+    return proc
+def text_of(message):
+    content = message.get('content') if isinstance(message, dict) else message
+    if isinstance(content, list): return ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
+    return '' if content is None else str(content)
+def consume(proc, work, run, end):
+    calls = running = 0
+    thought, reason, stop_at = '', None, None
+    inbox = queue.Queue()
+    def pump():
+        for raw in proc.stdout:
+            inbox.put(raw)
+        inbox.put(None)
+    threading.Thread(target=pump, daemon=True).start()
+    def finish(why):
+        nonlocal thought
+        if thought:
+            heading(run, 'think', thought)
+            thought = ''
+        return why
+    while True:
+        now = time.time()
+        if now >= end: return finish('deadline')
+        if (work / 'stop').exists():
+            stop_at = stop_at or now + STOP_GRACE
+            if now >= stop_at: return finish('stopped')
+        try:
+            raw = inbox.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        if raw is None:
+            code = proc.wait(timeout=10)
+            if (work / 'stop').exists(): return finish('stopped')
+            if code != 0: return finish('failed_agent')
+            return finish(reason or 'completed')
+        line = raw.decode('utf-8', 'replace').rstrip('\r\n')
+        if not line.startswith('{'):
+            if line:
+                heading(run, 'err', line)
+            continue
+        item = json.loads(line)
+        if not isinstance(item, dict): continue
+        kind, sub = item.get('type'), item.get('subtype')
+        if kind == 'thinking' and sub == 'delta':
+            thought += item.get('text') or ''
+            continue
+        finish(None)
+        if kind == 'assistant' and text_of(item.get('message')):
+            heading(run, 'say', text_of(item.get('message')))
+        elif kind == 'tool_call' and sub == 'started':
+            running += 1
+        elif kind == 'tool_call' and sub == 'completed':
+            running, calls = max(0, running - 1), calls + 1
+            heading(run, 'tool', json.dumps(item.get('tool_call') or {}, ensure_ascii=False))
+            if calls >= ROTATE_AT and running == 0 and not (work / 'stop').exists() and time.time() < end: return finish('rotate')
+        elif kind == 'system' and sub == 'init':
+            heading(run, 'start', str(item.get('model') or ''))
+        elif kind == 'result':
+            failed = item.get('is_error') or item.get('error') or str(sub or '').startswith('error')
+            reason = 'failed_agent' if failed else 'completed'
+            if failed: return finish(reason)
+def fold_lesson(work, run_id, state, start, minutes):
+    lesson = WAKE.sub('', read(work / 'lesson.txt')).strip() or 'No lesson was written.'
+    if len(lesson) > 7200: raise SystemExit('a lesson has 1-7200 characters')
+    parts = WAKE.split(read(work / 'ledger.md'))[1:]
+    kept = [part for part in parts if part.split(None, 1)[0] != run_id]
+    stamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start))
+    kept.append(f'{run_id} {stamp} used {(time.time() - start) / 60:.1f} of {float(minutes):g} min, {state}\n{lesson}\n')
+    write(work / 'ledger.md', ''.join('## wake ' + part for part in kept))
+def drive(work, sentence, minutes, model, run_id):
+    work = Path(work)
+    work.mkdir(parents=True, exist_ok=True)
+    for name in ('stop', 'lesson.txt'):
+        path = work / name
+        if path.exists():
+            path.unlink()
+    start = time.time()
+    end = start + float(minutes) * 60
+    run_id = run_id or time.strftime('%Y%m%d_%H%M%S')
+    run = work / f'run_{run_id}.md'
+    write(work / 'goal.txt', sentence.strip() + '\n')
+    model = choose_brain(sentence, model)
+    outcome, chat = 'failed', 0
+    heading(run, 'wake', f'minutes={float(minutes):g}')
+    while time.time() < end and not (work / 'stop').exists():
+        chat += 1
+        write(work / 'prompt.txt', render(work, run, run_id, sentence, minutes, end, model))
+        heading(run, 'chat', f'{model} {chat}')
+        job, proc = open_job(), None
+        try:
+            proc = launch(work, model, work / 'prompt.txt', job)
+            outcome = consume(proc, work, run, end)
+        finally:
+            close_job(job)
+            if proc is not None and proc.poll() is None:
+                proc.wait(timeout=15)
+        heading(run, 'agent-exit', outcome)
+        if outcome != 'rotate': break
+    else:
+        outcome = 'deadline' if time.time() >= end else 'stopped'
+    fold_lesson(work, run_id, outcome, start, minutes)
+    heading(run, 'mind', json.dumps({'state': outcome, 'minutes': round((time.time() - start) / 60, 1)}))
+    return outcome
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == 'serve': return Journal(ROOT).serve()
+    if argv and not argv[0].startswith('-'): return wake(Path(argv[0]).read_text(encoding='utf-8-sig'))
+    parser = argparse.ArgumentParser(prog='trident', add_help=False)
+    parser.add_argument('--minutes', required=True)
+    for name in ('work', 'sentence', 'mind-file', 'model', 'run'): parser.add_argument('--' + name, default='')
+    args = parser.parse_args(argv)
+    minutes = float(args.minutes)
+    if minutes <= 0: raise SystemExit('minutes must be positive')
+    if bool(args.sentence.strip()) == bool(args.mind_file): raise SystemExit('pass exactly one of --sentence or --mind-file')
+    sentence = args.sentence.strip() if args.sentence.strip() else read(args.mind_file).strip()
+    if not sentence: raise SystemExit('the sentence is empty')
+    outcome = drive(Path(args.work).resolve() if args.work else ROOT, sentence, minutes, args.model, args.run)
+    if outcome not in ('completed', 'stopped', 'deadline'): raise SystemExit(outcome)
+if __name__ == '__main__':
     main()
