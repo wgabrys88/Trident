@@ -328,9 +328,16 @@ class Desk:
         finally:
             send(LEFT_UP)
     def brush_pixels(self, pixels, dwell=0.004):
+        # Below about 0.003s the oil brush drops samples and the previous color shows through.
+        if dwell and dwell < 0.003:
+            dwell = 0.003
+        # A one-point mark has to move at least a pixel or the oil brush lays nothing down.
+        # Step in Y. A step in X walks into the vertical opacity slider and drags it.
+        pixels = [(int(x), int(y)) for x, y in pixels]
+        if len(pixels) == 1:
+            pixels = [pixels[0], (pixels[0][0], pixels[0][1] + 1)]
         if len(pixels) < 2:
             raise Fail('brush needs two points')
-        pixels = [(int(x), int(y)) for x, y in pixels]
         send(LEFT_UP)
         send(MOVE, *pixels[0], absolute=True)
         try:
