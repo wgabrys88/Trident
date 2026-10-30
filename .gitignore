@@ -1,5 +1,3 @@
 *
 !/.gitignore
-!/*.py
-__pycache__/
-*.pyc
+!/trident.py
