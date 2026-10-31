@@ -1,4 +1,4 @@
-import argparse, base64, ctypes, hashlib, json, math, os, queue, socket, subprocess, sys, threading, time, urllib.request, uuid
+import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, subprocess, sys, threading, time, urllib.request, uuid
 from datetime import datetime, timezone
 from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
@@ -62,11 +62,14 @@ class Live(BaseHTTPRequestHandler):
     fan = None
     def log_message(self, fmt, *args): return
     def do_POST(self):
+        if self.path.partition('?')[0] != '/log': self.send_error(404); return
         item = json.loads(self.rfile.read(int(self.headers["Content-Length"])).decode())
         type(self).fan.write(item["agent"], item["kind"], item["body"]); self.send_response(204); self.end_headers()
     def do_GET(self):
         fan = type(self).fan
-        if self.path.startswith("/events"):
+        route = self.path.partition('?')[0]
+        if route not in ('/', '/md', '/events'): self.send_error(404); return
+        if route == '/events':
             self.send_response(200); self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache"); self.end_headers()
             with fan.lock: box = fan.listen()
@@ -74,16 +77,16 @@ class Live(BaseHTTPRequestHandler):
                 while True: self._sse(box.get())
             finally:
                 with fan.boxlock: fan.boxes.remove(box)
-        raw = fan.path.read_bytes() if self.path.startswith("/md") else fan.html()
-        kind = "text/markdown; charset=utf-8" if self.path.startswith("/md") else "text/html; charset=utf-8"
+        with fan.lock: raw = fan.path.read_bytes() if route == '/md' else fan.html()
+        kind = "text/markdown; charset=utf-8" if route == '/md' else "text/html; charset=utf-8"
         self.send_response(200); self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(raw))); self.end_headers(); self.wfile.write(raw)
     def _sse(self, item):
         self.wfile.write(b"data: " + json.dumps(item).encode() + b"\n\n"); self.wfile.flush()
 class Journal:
     def __init__(self, root):
-        self.path = root / time.strftime("run_%Y%m%d_%H%M%S.md")
-        self.path.write_text("", encoding="utf-8")
+        self.root, self.path = root, root / f"hub_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.md"
+        self.path.open('x', encoding='utf-8').close()
         self.lock, self.boxlock, self.boxes, self.events, self.colors = threading.Lock(), threading.Lock(), [], [], {}
         Live.fan = self
         subprocess.Popen(["powershell.exe", "-NoExit", "-NoProfile", "-Command",
@@ -96,8 +99,20 @@ class Journal:
         while True: U.SetWindowPos(rows[0], TOP, x, 16, 480, 300, 0x0050); time.sleep(0.4)
     def listen(self):
         box = queue.Queue()
+        for color, text in self.events: box.put(dict(color=color, text=text))
         with self.boxlock: self.boxes.append(box)
         return box
+    def follow(self):
+        sources = {}
+        while True:
+            for path in sorted(self.root.glob('run_*.md')):
+                if not path.is_file(): continue
+                if path not in sources: sources[path] = [0, codecs.getincrementaldecoder('utf-8')()]
+                source = sources[path]
+                with path.open('rb') as handle:
+                    handle.seek(source[0]); text = source[1].decode(handle.read()); source[0] = handle.tell()
+                if text: self.write(path.stem, 'run', text)
+            time.sleep(0.2)
     def write(self, agent, kind, body=""):
         with self.lock:
             if agent not in self.colors:
@@ -111,19 +126,16 @@ class Journal:
         with self.boxlock:
             for box in self.boxes: box.put({"color": color, "text": text})
     def html(self):
-        with self.lock:
-            rows = "".join('<pre style="color:%s">%s</pre>' % (c, t.replace("&", "&amp;").replace("<", "&lt;")) for c, t in self.events)
         return ("<!doctype html><meta charset=utf-8><title>Trident</title><style>body{margin:0;background:#10141a}"
                 "pre{white-space:pre-wrap;margin:0;padding:8px 14px;font:14px/1.4 Consolas,monospace}</style><div id=p>"
-                + rows + "</div><script>const p=document.getElementById('p'),es=new EventSource('/events');"
+                "</div><script>const p=document.getElementById('p'),es=new EventSource('/events');es.onopen=()=>p.replaceChildren();"
                 "es.onmessage=e=>{const m=JSON.parse(e.data),d=document.createElement('pre');d.style.color=m.color;d.textContent=m.text;p.appendChild(d);scrollTo(0,9e9)}</script>").encode()
     def serve(self):
-        threading.Thread(target=self.pin, daemon=True).start()
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        probe.connect(("8.8.8.8", 80)); self.host = probe.getsockname()[0]; probe.close()
-        self.write("hub", "listen", f"http://{self.host}:{PORT}/")
         ThreadingHTTPServer.allow_reuse_address = True
-        ThreadingHTTPServer(("0.0.0.0", PORT), Live).serve_forever()
+        with ThreadingHTTPServer(("0.0.0.0", PORT), Live) as server:
+            for target in (self.pin, self.follow): threading.Thread(target=target, daemon=True).start()
+            self.write('hub', 'listen', f'http://127.0.0.1:{PORT}/')
+            server.serve_forever()
 def request(url, payload, timeout, headers=None):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
                                  headers={**(headers or {}), "Content-Type": "application/json"})
@@ -390,9 +402,9 @@ class ACP:
         content = [dict(type='text', text=text)]
         for path in dict.fromkeys([*images, *files]):
             path = self.mission.resolve(path)
-            data, digest, size = self.mission.read(path, True)
+            data, digest, _ = self.mission.read(path, True)
             mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg'}.get(path.suffix.lower())
-            content.append(dict(type='text', text=json.dumps(dict(path=str(path), sha256=digest, bytes=size))))
+            content.append(dict(type='text', text=json.dumps(dict(path=str(path)))))
             content.append(dict(type='image', mimeType=mime, data=base64.b64encode(data).decode()) if mime else
                 dict(type='text', text=data.decode('utf-8') if path.suffix.lower() in ('.txt', '.json', '.md', '.py', '.csv', '.html', '.svg', '.log') else base64.b64encode(data).decode()))
             if role == 'planner': self.mission.state['reviews'][str(path)] = digest
@@ -413,7 +425,7 @@ PLANNER = '''You are Trident's persistent planner and validator. The human goal 
 Plan one meaningful observable state change at a time. For desktop work choose one interface change or small visible work region, then inspect its resulting screenshot before planning dependent input. Do not batch the entire deliverable into an unobserved script. Use supplied images directly without redundant recapture or controller inspection. The actor may execute scripts and discover the installed application's supported launch interface; neither an unexecuted script nor a successful process exit proves the requested effect. Give executable instructions using the supplied helper contracts, without invented budgets, preparatory checklists or approvals.
 Your final answer must be one JSON object without markdown. Progress preceding tool calls is not a decision. Return {"policy":{"deadline":null,"source":null,"desktop":false},"criteria":["goal acceptance condition"],"plan":["step"],"decision":"act","action":null,"checks":[{"criterion":"goal acceptance condition","passed":false,"evidence":[],"reason":"not observed"}],"handover":null,"message":"finding or next action"}.
 First derive only policy and criteria from the goal and supplied timestamps, without tools, executable actions or assertions about an unobserved environment. Set decision=act, action=null and every check passed=false. deadline is a timezone-bearing ISO 8601 timestamp or null for an untimed goal; source is the exact goal timing quote or null. Calculate relative limits from started_at. desktop states whether desktop interaction is required. Subsequent turns may use Read and search and must repeat policy and criteria exactly. Timing and handover come only from the goal, never a fixed tool cap, closing window or retry rule.
-Subsequent decisions are act, complete, handover or blocked. Cite the supplied current screenshot, step record and output artifacts for checks. A partial Read can guide planning but cannot authorize an entire file. The controller supplies any newly cited passing-check evidence for one final verdict; that verdict must not introduce additional unseen evidence. Complete requires a passing, evidence-supported check for EVERY criterion. Screenshots must show the requested result, not just setup. state.json, story.txt and ledger.md are mutable memory, not completion proof; step records preserve the observed tool and session history. Failures remain recorded after repair. Additional agents must have genuine recorded IDs and no desktop-input authority. For handover return {"continue":true or false,"session_id":null or a known actor session ID,"instructions":"verified progress, unresolved failures, and next action"}; choose continuation from the goal. Use blocked for missing information. The controller alone writes state.json, story.txt, ledger.md and stop.'''
+Subsequent decisions are act, complete, handover or blocked. Cite the supplied current screenshot, step record and output artifacts for checks. Inspect actual results before making a passing check. The controller supplies missing evidence contents before your final verdict; cite only supplied files in that verdict. Complete requires a passing, evidence-supported check for EVERY criterion. Screenshots must show the requested result, not just setup. state.json, story.txt and ledger.md are mutable memory, not completion proof; step records preserve the observed tool and session history. Failures remain recorded after repair. Additional agents must have genuine recorded IDs and no desktop-input authority. For handover return {"continue":true or false,"session_id":null or a known actor session ID,"instructions":"verified progress, unresolved failures, and next action"}; choose continuation from the goal. Use blocked for missing information. The controller alone writes state.json, story.txt, ledger.md and stop.'''
 ACTOR = '''You are Trident's acting agent. Execute the planner's current action, producing one meaningful observable state change, then report actual results and existing evidence paths. For desktop work finish one interface change or small visible work region and return for screenshot validation before dependent actions. Do not turn the whole deliverable into an unobserved batch. If the action or an input precondition fails, stop and report so the planner can choose the next action. Do not add defensive wrappers, fallback executables, retry loops or compatibility paths. Executed scripts are valid tools; a script file alone is not an outcome. Discovering the installed native application's supported launch interface is allowed. You alone own desktop input; delegates may read, research or work on files, never drive the desktop. Respect the human goal's constraints. Inspect the actual current interface and verify target coordinates before input. Check window and input API results and stop on failure rather than merely printing an error. Use native application tools; process exit is not visual proof. Import the supplied helpers instead of rebuilding them or inspecting their implementation just to learn their signatures. Never edit controller-owned state.json, story.txt, ledger.md or stop, fabricate an artifact or hide a failure.'''
 HANDS = '''
 Windows helpers in the supplied body path: windows(title_suffix) returns visible matching HWNDs; focus(hwnd) activates the target, restores it only if minimized, preserves normal window bounds and raises on failed activation. at(hwnd,x,y) converts client pixels to physical screen pixels. pointer(x,y,flags) uses physical virtual-desktop pixels: 0 moves, 2 presses left, 4 releases left. chord(*pairs) takes (virtual_key,flags), where 0 presses and 2 releases. capture(path,end=None) saves the whole virtual desktop as PNG and returns path; end, when supplied, is a monotonic deadline. The controller supplies post-action captures. Screenshot metadata gives original pixel dimensions and virtual-screen origin; convert coordinates from any resized display to those physical pixels before input. Use measured accessibility bounds when available. A successful SendInput count establishes insertion, not that the intended control received it.
@@ -490,7 +502,7 @@ class Mission:
         return missing
     def files(self):
         found = {}
-        ignored = {self.work / name for name in ('agent', '.git', 'state.json', 'story.txt', 'ledger.md', 'prompt.txt', 'goal.txt', 'stop')} | {self.path, self.evidence / 'previous.json'}
+        ignored = {self.work / name for name in ('agent', '.git', 'state.json', 'story.txt', 'ledger.md', 'prompt.txt', 'goal.txt', 'stop')} | {self.path, self.evidence / 'previous.json'} | set(self.work.glob('hub_*.md'))
         for base, directories, names in os.walk(self.work):
             remaining(self.end)
             directories[:] = [name for name in directories if Path(base) / name not in ignored]
@@ -528,7 +540,7 @@ class Mission:
         if complete and sorted(c['criterion'] for c in checks) != sorted(self.state['criteria']): raise ValueError('verification must cover every goal criterion')
         if not all(c['passed'] is True and c['evidence'] and c['reason'] for c in checks): raise ValueError('goal has unverified criteria')
         missing = self.unreviewed(checks)
-        if missing: raise ValueError(f'evidence was not supplied to the planner at its current hash: {missing}')
+        if missing: raise ValueError(f'evidence contents changed or were not supplied to the planner: {missing}')
         remaining(self.end)
     def context(self):
         keys = ('goal', 'model', 'run', 'started_at', 'status', 'sessions', 'agents', 'runtime_models', 'policy', 'criteria', 'plan', 'action', 'checks', 'handover', 'result', 'pending_tools', 'step_evidence', 'desktop', 'timing', 'failures', 'latest_artifacts')
@@ -566,7 +578,7 @@ def drive(work, goal, model='', run=''):
                 if missing:
                     mission.save('evidence-review', decision)
                     decision = client.prompt('planner', PLANNER + '\nFINAL EVIDENCE VERDICT: inspect exactly the newly attached evidence. Return the full decision JSON using only evidence already supplied. Do not introduce unseen citations.\n' + json.dumps(mission.context(), ensure_ascii=False), files=missing)
-                    if mission.unreviewed(decision['checks']): raise ValueError('final verdict introduced evidence not supplied at its current hash')
+                    if mission.unreviewed(decision['checks']): raise ValueError('final verdict cited changed or unsupplied evidence')
                 action = mission.decision(decision)
                 mission.verify(action == 'complete')
                 if action == 'complete':
@@ -592,9 +604,8 @@ def drive(work, goal, model='', run=''):
                 state['latest_artifacts'] = [str(mission.artifact(path)) for path, stamp in after.items() if before.get(path) != stamp]
                 if state['policy']['desktop']: image = mission.observe(str(step))
                 evidence = mission.evidence / f'{step}.json'
-                paths = set(state['latest_artifacts']) | ({str(image)} if image else set())
                 write(evidence, json.dumps(dict(result=result, sessions=state['sessions'], agents=state['agents'], handover=state['handover'], policy=state['policy'], desktop=state['desktop'],
-                    written=state['latest_artifacts'], artifacts=[e for e in state['evidence'] if e['path'] in paths], deleted=[str(path) for path in before if path not in after], tools=state['observations'][offset:]), ensure_ascii=False, indent=2))
+                    written=state['latest_artifacts'], deleted=[str(path) for path in before if path not in after], tools=state['observations'][offset:]), ensure_ascii=False, indent=2))
                 state['step_evidence'] = str(mission.artifact(evidence, 'tool outcomes'))
                 state['latest_artifacts'].append(str(evidence)); mission.save('actor', result)
         except Deadline as error:
