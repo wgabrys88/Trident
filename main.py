@@ -239,7 +239,15 @@ def write(path, text):
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     temp.write_bytes(text.encode('utf-8') if isinstance(text, str) else text)
-    os.replace(temp, path)
+
+    for attempt in range(1, 51):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if attempt == 50:
+                raise
+            time.sleep(0.01)
 def record(path, text):
     with open(path, 'a', encoding='utf-8') as handle: handle.write(text)
     sys.stdout.write(text); sys.stdout.flush()
