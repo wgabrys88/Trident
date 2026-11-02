@@ -199,19 +199,19 @@ def choose_mind(goal, model):
         if model not in MINDS: raise SystemExit('unknown mind: ' + model)
         return model
     return next((mind for mind in sorted(MINDS, key=len, reverse=True) if mind in goal.lower()), MIND)
-OBSERVER = ("You are Trident's observer, the judgment of a living organism that works on this computer. The human sentence is the only assignment. Today's date and current facts come from the system clock and the internet, never from memory. "
+OBSERVER = ("Return one JSON object without Markdown. You are Trident's observer, the judgment of a living organism that works on this computer. The human sentence is the only assignment. Today's date and current facts come from the system clock and the internet, never from memory. "
             "On the first turn return only {\"timing\":{\"deadline\":null,\"source\":null},\"criteria\":[\"...\"]}: a deadline exists only when the human wrote one, as an ISO timestamp with timezone plus the verbatim quote in source; criteria describe the result the human will hold, never procedure, tools, reading or timing. "
-            "On every later turn you are shown the latest screen capture and the actor's tools and artifacts; inspect real evidence yourself and return {\"decision\":\"act\",\"action\":\"the next useful work\",\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
+            "On every later turn you are shown the latest screen capture and the actor's reply and tools; inspect real evidence yourself and return {\"decision\":\"act\",\"action\":\"the next useful work\",\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
             "Decisions are act, complete, blocked or handover. Findings carry only criteria whose status changed; a file, a green command or a confident summary is not evidence until you inspected its content. Complete only when every criterion is supported by inspected artifacts. "
             "Your message is the organism's memory: plain prose on what was tried, what was seen, what was learned and what comes next, appended to story.md and read by future runs. Add no restriction, budget, deadline or ban the human did not write; prefer the bolder useful action, parallel work and fresh routes over repeating one. "
             "Handover is {\"continue\":true,\"fresh\":[\"actor\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear a tangled actor or your own context; continue false ends the run for a human to take over.")
 ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that works on this computer. Carry the current action as far as it usefully goes in one turn, observing results between dependent steps and changing method when results warrant. "
          "Research the internet by default and take current facts from it. Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. "
          "screen gives the path and geometry of the most recent capture; Read it or capture a fresh region yourself when you need to see, and before a side-effect click locate the target with Jev and look. After input, inspect the effect. "
-         "Return {\"summary\":\"what actually happened, including failures, unfinished work and the real IDs and paths of workers and copies\",\"artifacts\":[\"existing output paths\"],\"body_changes\":[\"each generic helper or prompt sentence you added to the body, or empty\"]}.")
-CONTRACT = ("Return one JSON object without Markdown. You have every installed tool of this computer and the owner's standing authorization for research, files, applications, Chrome, images, shell and code; availability is proven by use, not assumed. "
+         "End your turn with plain prose on what actually happened, including failures, unfinished work, output paths, the real IDs and paths of workers and copies, and each generic helper or prompt sentence you added to the body.")
+CONTRACT = ("You have every installed tool of this computer and the owner's standing authorization for research, files, applications, Chrome, images, shell and code; availability is proven by use, not assumed. "
             "The body is the file at body; your shell is PowerShell, so to use its helpers run one python -c that adds the body's directory to sys.path, imports main, and makes several calls at once rather than one process per call. "
-            "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and no task words, then name it in body_changes. "
+            "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and no task words, then name it in your reply. "
             "Helpers: find_windows(title_suffix)->HWND list; focus(hwnd); client_size(hwnd)->(width,height); to_screen(hwnd,x,y)->physical point from client pixels; pointer(x,y,flags) in physical pixels, flags 0 move 2 left down 4 left up; click(x,y,pause=0.04)->that point; drag(x1,y1,x2,y2,steps=12,pause=0.018)->end point; chord(*(vk,0 down or 2 up)) types keys, not text; "
             "paste(hwnd,text) puts text on the clipboard and presses Ctrl+V in that window, for any text including Polish letters; stroke(hwnd,points,pause=0.008)->screen points; capture(path,end=None,region=None)->PNG of the whole virtual screen, or of region (left,top,width,height) in physical pixels; "
             "virtual_screen()->(left,top,width,height); lease('desktop',wait=True) is a context manager, hold it for each burst of input and release it after; "
@@ -389,7 +389,7 @@ class ACP:
         if self.thought[session]: self.mission.record(role + '-thought', self.thought[session])
         if result['stopReason'] != 'end_turn': raise RuntimeError('Cursor stopped the turn: ' + result['stopReason'])
         self.mission.record(role, self.text[session])
-        return json.loads(self.text[session])
+        return self.text[session]
     def cancel(self):
         if self.active:
             self.send(dict(method='session/cancel', params=dict(sessionId=self.active)))
@@ -406,11 +406,11 @@ def run_goal(work, goal, model, run):
                 client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='3')))
                 for role in ('actor', 'observer'): state['sessions'][role] = client.session(role)
                 mission.record('sessions', state['sessions'])
-                mission.initialize(client.prompt('observer', dict(initialize=True), None))
+                mission.initialize(json.loads(client.prompt('observer', dict(initialize=True), None)))
                 witness, step, update = mission.observe('0'), 0, {}
                 while True:
                     remaining(mission.end)
-                    decision = client.prompt('observer', dict(now=utc(), criteria=state['criteria'], timing=state['timing'], checks=state['checks'], handover=state['handover'], screen=state['screen'], **update), witness)
+                    decision = json.loads(client.prompt('observer', dict(now=utc(), criteria=state['criteria'], timing=state['timing'], checks=state['checks'], handover=state['handover'], screen=state['screen'], **update), witness))
                     state['checks'].update(decision['findings'])
                     state['action'], state['handover'] = decision['action'], decision['handover']
                     mission.narrate('judgment', decision['message'])
@@ -429,13 +429,11 @@ def run_goal(work, goal, model, run):
                     elif verdict != 'act': raise ValueError('unknown observer decision: ' + verdict)
                     step += 1
                     state['status'] = 'acting'
-                    result = client.prompt('actor', dict(action=state['action'], findings=decision['findings'], message=decision['message'], handover=state['handover'], screen=state['screen']), None)
-                    state['result'] = result
-                    mission.narrate('hands', result['summary'])
+                    state['result'] = result = client.prompt('actor', dict(action=state['action'], findings=decision['findings'], message=decision['message'], handover=state['handover'], screen=state['screen']), None)
+                    if result.strip(): mission.narrate('hands', result)
                     witness = mission.observe(str(step))
-                    artifacts = [mission.artifact(path) for path in result['artifacts']]
                     state['status'] = 'observing'
-                    update = dict(result=result, artifacts=artifacts, tools=client.turn)
+                    update = dict(result=result, tools=client.turn)
             remaining(mission.end)
         except (Deadline, Blocked) as error:
             state['status'] = 'deadline' if isinstance(error, Deadline) else 'blocked'
