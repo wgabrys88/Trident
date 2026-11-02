@@ -332,6 +332,9 @@ class ACP:
             self.send(dict(id=message['id'], result=dict(outcome=dict(outcome='accepted'))))
             self.mission.record('plan', params)
         elif method == 'session/update': self.update(params)
+        elif method == 'cursor/task':
+            self.send(dict(id=message['id'], result=dict(outcome=dict(outcome='completed'))))
+            self.mission.record('task', params)
         elif 'id' in message: raise Blocked('unanswerable ACP request: ' + json.dumps(message, ensure_ascii=False))
         else: self.mission.record(method, params)
     def update(self, params):
