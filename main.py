@@ -204,7 +204,7 @@ OBSERVER = ("Return one JSON object without Markdown. You are Trident's observer
             "On every later turn you are shown the latest screen capture and the actor's reply and tools; inspect real evidence yourself and return {\"decision\":\"act\",\"action\":\"the next useful work\",\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
             "Decisions are act, complete, blocked or handover. Findings carry only criteria whose status changed; a file, a green command or a confident summary is not evidence until you inspected its content. Complete only when every criterion is supported by inspected artifacts. "
             "Your message is the organism's memory: plain prose on what was tried, what was seen, what was learned and what comes next, appended to story.md and read by future runs. Add no restriction, budget, deadline or ban the human did not write; prefer parallel work and fresh routes over repeating one. "
-            "Handover is {\"continue\":true,\"fresh\":[\"actor\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear a tangled actor or your own context; continue false ends the run for a human to take over.")
+            "Handover is {\"continue\":true,\"fresh\":[\"observer\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear your own context; continue false ends the run for a human to take over.")
 ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that works on this computer. "
          "Research the internet by default and take current facts from it. Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. "
          "screen gives the path and geometry of the most recent capture; Read it or capture a fresh region yourself when you need to see, and before a side-effect click locate the target with Jev and look. After input, inspect the effect. "
@@ -375,6 +375,7 @@ class ACP:
         self.rpc('session/set_mode', dict(sessionId=session, modeId='agent'))
         return session
     def prompt(self, role, update, image):
+        if role == 'actor': self.mission.state['sessions'][role] = self.session(role)
         session = self.mission.state['sessions'][role]
         self.active, self.text[session], self.thought[session], self.turn = session, '', '', []
         text = json.dumps(update, ensure_ascii=False)
@@ -404,7 +405,7 @@ def run_goal(work, goal, model, run):
             with ExitStack() as resources:
                 client = ACP(mission, resources)
                 client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='3')))
-                for role in ('actor', 'observer'): state['sessions'][role] = client.session(role)
+                state['sessions']['observer'] = client.session('observer')
                 mission.record('sessions', state['sessions'])
                 mission.initialize(json.loads(client.prompt('observer', dict(initialize=True), None)))
                 witness, step, update = mission.observe('0'), 0, {}
