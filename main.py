@@ -1,4 +1,4 @@
-import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, subprocess, sys, threading, time, urllib.request
+import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.request
 from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from datetime import datetime, timezone
@@ -13,6 +13,8 @@ MINDS = tuple(f'{GROK}-{effort}{speed}' for effort in ('low', 'medium', 'high', 
 MIND = f'{GROK}-medium-fast'
 NO_WINDOW, SUSPENDED = 0x08000000, 0x00000004
 PALETTE = ('#7CFFB2', '#7CC4FF', '#FFD27C', '#FF8FB8', '#C9B6FF', '#FFB07C')
+INITIATIVE = ('No concrete goal was given this time. Read your story.md and recent journals, look at this computer, and take the current date and anything time-sensitive from the internet. '
+              'Decide what is genuinely useful for the owner now and do it when it is clearly useful and reversible, otherwise do nothing and record one honest paragraph on why. You decide when the work is done.')
 user32, kernel32, ntdll = (ctypes.WinDLL(name, use_last_error=True) for name in ('user32', 'kernel32', 'ntdll'))
 ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 def signature(library, name, result, *arguments):
@@ -150,17 +152,15 @@ def post(url, payload, timeout, headers):
     with urllib.request.urlopen(request, timeout=timeout) as response: return json.loads(response.read())
 def image_part(path):
     return dict(type='image_url', image_url=dict(url='data:image/png;base64,' + base64.b64encode(Path(path).read_bytes()).decode()))
-def png_size(path):
-    with open(path, 'rb') as handle: header = handle.read(24)
-    return int.from_bytes(header[16:20], 'big'), int.from_bytes(header[20:24], 'big')
 def decide(state, questions):
     for question in questions.values():
         if question['type'] == 'choice': question['criteria']['change approach'] = 'The current route is not producing new evidence; a different tool, source or method is needed.'
     key = (ROOT.parent / '.env').read_text(encoding='utf-8').strip()
-    return post(DECISIONS, dict(model=JEV, state=state, questions=questions), 60, {'Authorization': 'Bearer ' + key})['answers']
-def locate(image, description, left, top):
-    answers = decide([f'Screenshot {image}:', image_part(image)], dict(target=dict(type='box', instructions=f'{description}, in the screenshot'), present=dict(type='noul', instructions=f'The screenshot shows {description}.')))
-    box, (width, height) = answers['target']['box'], png_size(image)
+    return post(DECISIONS, dict(model=JEV, state=state, questions=questions), 60, {'Authorization': 'Bearer ' + key})
+def locate(path, description, left, top, width, height):
+    answers = decide([f'A {width} by {height} pixel screen region:', image_part(capture(path, region=(left, top, width, height)))],
+                     dict(target=dict(type='box', instructions=f'{description}, in the region'), present=dict(type='noul', instructions=f'The region shows {description}.')))['answers']
+    box = answers['target']['box']
     return dict(x=round(left + (box['left'] + box['right']) / 2 * width), y=round(top + (box['top'] + box['bottom']) / 2 * height), present=answers['present']['noul'], confidence=answers['target']['confidence'])
 def journal(path, text):
     with open(path, 'a', encoding='utf-8') as handle: handle.write(text)
@@ -172,23 +172,24 @@ def choose_mind(goal, model):
     return next((mind for mind in sorted(MINDS, key=len, reverse=True) if mind in goal.lower()), MIND)
 OBSERVER = ("You are Trident's observer, the judgment of a living organism that works on this computer. The human sentence is the only assignment. Today's date and current facts come from the system clock and the internet, never from memory. "
             "On the first turn return only {\"timing\":{\"deadline\":null,\"source\":null},\"criteria\":[\"...\"]}: a deadline exists only when the human wrote one, as an ISO timestamp with timezone plus the verbatim quote in source; criteria describe the result the human will hold, never procedure, tools, reading or timing. "
-            "On every later turn inspect real evidence with your tools and return {\"decision\":\"act\",\"action\":{\"instruction\":\"the next useful work\"},\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
+            "On every later turn you are shown the latest screen capture and the actor's tools and artifacts; inspect real evidence yourself and return {\"decision\":\"act\",\"action\":\"the next useful work\",\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
             "Decisions are act, complete, blocked or handover. Findings carry only criteria whose status changed; a file, a green command or a confident summary is not evidence until you inspected its content. Complete only when every criterion is supported by inspected artifacts. "
             "Your message is the organism's memory: plain prose on what was tried, what was seen, what was learned and what comes next, appended to story.md and read by future runs. Add no restriction, budget, deadline or ban the human did not write; prefer the bolder useful action, parallel work and fresh routes over repeating one. "
-            "Handover is {\"continue\":true,\"session_id\":null,\"instructions\":\"progress and next work\"}: a recorded actor session id resumes it, null starts a fresh actor.")
+            "Handover is {\"continue\":true,\"fresh\":[\"actor\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear a tangled actor or your own context; continue false ends the run for a human to take over.")
 ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that works on this computer. Carry the current action as far as it usefully goes in one turn, observing results between dependent steps and changing method when results warrant. "
          "Research the internet by default and take current facts from it. Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. "
-         "Before a click with side effects, locate the target with Jev and look at a fresh capture; after input, inspect the effect. "
+         "screen gives the path and geometry of the most recent capture; Read it or capture a fresh region yourself when you need to see, and before a side-effect click locate the target with Jev and look. After input, inspect the effect. "
          "Return {\"summary\":\"what actually happened, including failures, unfinished work and the real IDs and paths of workers and copies\",\"artifacts\":[\"existing output paths\"],\"body_changes\":[\"each generic helper or prompt sentence you added to the body, or empty\"]}.")
 CONTRACT = ("Return one JSON object without Markdown. You have every installed tool of this computer and the owner's standing authorization for research, files, applications, Chrome, images, shell and code; availability is proven by use, not assumed. "
-            "The body is the file at body. Add its directory to sys.path and import main to use its helpers. The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and raised errors and no task words, then name it in body_changes. "
+            "The body is the file at body; your shell is PowerShell, so to use its helpers run one python -c that adds the body's directory to sys.path, imports main, and makes several calls at once rather than one process per call. "
+            "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and raised errors and no task words, then name it in body_changes. "
             "Helpers: find_windows(title_suffix)->HWND list; focus(hwnd); client_size(hwnd)->(width,height); to_screen(hwnd,x,y)->physical point from client pixels; pointer(x,y,flags) in physical pixels, flags 0 move 2 left down 4 left up; chord(*(vk,0 down or 2 up)) types keys, not text; "
             "paste(hwnd,text) puts text on the clipboard and presses Ctrl+V in that window, for any text including Polish letters; stroke(hwnd,points,pause=0.008)->screen points; capture(path,end=None,region=None)->PNG of the whole virtual screen, or of region (left,top,width,height) in physical pixels; "
-            "virtual_screen()->(left,top,width,height); png_size(path)->(width,height); lease('desktop',wait=True) is a context manager, hold it for each burst of input and release it after; "
-            "decide(state,questions)->Jev typesafe/jev-1.14 typed answers with probabilities over text and PNG image parts from image_part(path), question types choice, noul, score and box, and every choice gets the option change approach; "
-            "locate(image,description,left,top)->{x,y,present,confidence}, the physical center of the described target in a capture whose top-left is left,top; Jev takes 256 to 1568 pixels per side, so give it a region capture. If Jev raises, read the error and proceed another way. "
+            "virtual_screen()->(left,top,width,height); lease('desktop',wait=True) is a context manager, hold it for each burst of input and release it after; "
+            "decide(state,questions)->the Jev typesafe/jev-1.14 response, with answers (typed, with probabilities, over text and PNG image parts from image_part(path), question types choice, noul, score and box, every choice given the option change approach) and usage.cost; "
+            "locate(path,description,left,top,width,height) captures that physical region, asks Jev, and returns {x,y,present,confidence} in physical pixels, so keep each side between 256 and 1568 pixels. If Jev raises, read the error and proceed another way. "
             "Jev is fast and cheap: use it before side-effect clicks, to verify screens and artifacts, to choose between routes and to test your own criteria. Do not repeat a tool or route because it worked once; vary source and method. "
-            "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy owns its workspace and story, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
+            "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy inherits this workspace's Cursor configuration, owns its own workspace and story, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
             "Memory: story.md is append-only prose shared by every run in this workspace, run_*.md is this run's journal, evidence/<run>/ holds captures. SendInput does not prove application effect; inspect.")
 class Mission:
     def __init__(self, work, goal, model, run, started):
@@ -198,9 +199,8 @@ class Mission:
         self.journal, self.story, self.evidence = self.work / f'run_{self.run}.md', self.work / 'story.md', self.work / 'evidence' / self.run
         self.evidence.mkdir(parents=True)
         self.story.touch()
-        (self.work / 'stop').unlink(missing_ok=True)
-        (self.work / 'goal.txt').write_text(goal + '\n', encoding='utf-8')
         self.state = dict(goal=goal, model=model, run=self.run, started=started, status='observing', sessions={}, runtime={}, timing=None, criteria={}, checks={}, action=None, result=None, handover=None, screen=None, workers=[], failures=[], artifacts={})
+        self.narrate('opening', f'Run {self.run} on {model} begins. Goal: {goal}')
         self.record('goal', goal)
     def record(self, kind, value):
         body = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
@@ -243,14 +243,17 @@ class ACP:
     def __init__(self, mission, resources):
         self.mission, self.inbox, self.counter = mission, queue.Queue(), 0
         self.roles, self.text, self.thought, self.tools, self.turn, self.ready = {}, {}, {}, {}, [], set()
-        self.active = self.loading = None
-        config = mission.work / 'agent/config/cli-config.json'
-        settings = json.loads(config.read_text(encoding='utf-8')) if config.exists() else dict(version=1)
+        self.active = None
+        config, source = mission.work / 'agent/config', ROOT / 'agent/config'
+        if source != config and (source / 'cli-config.json').exists() and not (config / 'cli-config.json').exists():
+            shutil.copytree(source, config, ignore=shutil.ignore_patterns('acp-sessions', 'statsig-cache.json*'), dirs_exist_ok=True)
+        config.mkdir(parents=True, exist_ok=True)
+        cli = config / 'cli-config.json'
+        settings = json.loads(cli.read_text(encoding='utf-8')) if cli.exists() else dict(version=1)
         settings.update(permissions=dict(allow=[], deny=[]), approvalMode='allowlist', sandbox=dict(mode='disabled'))
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
+        cli.write_text(json.dumps(settings, ensure_ascii=False), encoding='utf-8')
         job = job_object(resources)
-        environment = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', CURSOR_CONFIG_DIR=str(config.parent), CURSOR_DATA_DIR=str(mission.work / 'agent/data'))
+        environment = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1', CURSOR_CONFIG_DIR=str(config), CURSOR_DATA_DIR=str(mission.work / 'agent/data'))
         agent = Path(environment['LOCALAPPDATA']) / 'cursor-agent/agent.ps1'
         self.process = subprocess.Popen(['powershell.exe', '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(agent), '--trust', '--workspace', str(mission.work), 'acp'],
                                         cwd=mission.work, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW | SUSPENDED)
@@ -303,7 +306,6 @@ class ACP:
         elif 'id' in message: raise Blocked('unanswerable ACP request: ' + json.dumps(message, ensure_ascii=False))
         else: self.mission.record(method, params)
     def update(self, params):
-        if self.loading is not None: return
         update, session = params['update'], params['sessionId']
         kind, role = update['sessionUpdate'], self.roles[session]
         if kind == 'agent_message_chunk':
@@ -328,11 +330,9 @@ class ACP:
             self.mission.state['workers'].append(update)
             self.mission.record('worker-spawned', update)
         else: self.mission.record(kind, update)
-    def session(self, role, identity=None):
-        self.loading = identity
-        try: result = self.rpc('session/load' if identity else 'session/new', dict(cwd=str(self.mission.work), mcpServers=[], **({'sessionId': identity} if identity else {})))
-        finally: self.loading = None
-        session = result.get('sessionId', identity)
+    def session(self, role):
+        result = self.rpc('session/new', dict(cwd=str(self.mission.work), mcpServers=[]))
+        session = result['sessionId']
         self.roles[session], self.text[session], self.thought[session] = role, '', ''
         mind = self.mission.state['model']
         for option, value in (('model', GROK), ('reasoning_effort', mind.removeprefix(GROK + '-').removesuffix('-fast')), ('fast', str(mind.endswith('-fast')).lower())):
@@ -349,7 +349,7 @@ class ACP:
             self.ready.add(session)
         content = [dict(type='text', text=text)]
         if image: content += [dict(type='text', text=str(image)), dict(type='image', mimeType='image/png', data=base64.b64encode(Path(image).read_bytes()).decode())]
-        self.mission.record('prompt', dict(time=utc(), role=role, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None))
+        self.mission.record('prompt', dict(time=utc(), role=role, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None, text=text))
         result = self.rpc('session/prompt', dict(sessionId=session, prompt=content))
         self.active = None
         if self.thought[session]: self.mission.record(role + '-thought', self.thought[session])
@@ -369,15 +369,14 @@ def run_goal(work, goal, model, run):
         try:
             with ExitStack() as resources:
                 client = ACP(mission, resources)
-                client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='2')))
+                client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='3')))
                 for role in ('actor', 'observer'): state['sessions'][role] = client.session(role)
                 mission.record('sessions', state['sessions'])
                 mission.initialize(client.prompt('observer', dict(initialize=True), None))
-                image, step = mission.observe('0'), 0
-                update = dict(criteria=state['criteria'], timing=state['timing'], screen=state['screen'])
+                witness, step, update = mission.observe('0'), 0, {}
                 while True:
                     remaining(mission.end)
-                    decision = client.prompt('observer', dict(now=utc(), **update), image)
+                    decision = client.prompt('observer', dict(now=utc(), criteria=state['criteria'], timing=state['timing'], checks=state['checks'], handover=state['handover'], screen=state['screen'], **update), witness)
                     state['checks'].update(decision['findings'])
                     state['action'], state['handover'] = decision['action'], decision['handover']
                     mission.narrate('judgment', decision['message'])
@@ -386,23 +385,23 @@ def run_goal(work, goal, model, run):
                     if verdict == 'blocked': state['status'] = 'blocked'; break
                     if verdict == 'handover':
                         handover = state['handover']
-                        if not handover['instructions']: raise ValueError('a handover needs instructions')
+                        if not handover or not handover['instructions']: raise ValueError('a handover needs instructions')
                         if not handover['continue']: state['status'] = 'handover'; break
-                        resume = handover['session_id']
-                        if resume and client.roles[resume] != 'actor': raise ValueError('a handover resumes a recorded actor session')
-                        state['sessions']['actor'] = client.session('actor', resume)
+                        for role in handover['fresh']:
+                            if role not in ('actor', 'observer'): raise ValueError('a handover refreshes actor or observer, not ' + role)
+                            state['sessions'][role] = client.session(role)
                         mission.record('sessions', state['sessions'])
+                        state['action'] = handover['instructions']
                     elif verdict != 'act': raise ValueError('unknown observer decision: ' + verdict)
                     step += 1
                     state['status'] = 'acting'
-                    before = mission.observe(f'{step}-before')
-                    result = client.prompt('actor', dict(action=state['action'], findings=decision['findings'], message=decision['message'], handover=state['handover'], screen=state['screen']), before)
+                    result = client.prompt('actor', dict(action=state['action'], findings=decision['findings'], message=decision['message'], handover=state['handover'], screen=state['screen']), None)
                     state['result'] = result
                     mission.narrate('hands', result['summary'])
-                    image = mission.observe(str(step))
+                    witness = mission.observe(str(step))
                     artifacts = [mission.artifact(path) for path in result['artifacts']]
                     state['status'] = 'observing'
-                    update = dict(result=result, artifacts=artifacts, screen=state['screen'], tools=client.turn)
+                    update = dict(result=result, artifacts=artifacts, tools=client.turn)
             remaining(mission.end)
         except (Deadline, Blocked) as error:
             state['status'] = 'deadline' if isinstance(error, Deadline) else 'blocked'
@@ -419,7 +418,6 @@ def run_goal(work, goal, model, run):
                                        f"Workers: {len(state['workers'])}. Failures: {json.dumps(state['failures'], ensure_ascii=False)}. Last action: {json.dumps(state['action'], ensure_ascii=False)}. Handover: {json.dumps(state['handover'], ensure_ascii=False)}. "
                                        + ('The body changed during this run, so the next run executes the new body.' if body_after != body_before else 'The body did not change.'))
             mission.record('final', dict(status=state['status'], elapsed_seconds=elapsed, passed=passed, criteria=len(state['criteria']), failures=state['failures'], workers=len(state['workers']), action=state['action'], handover=state['handover'], body_changed=body_after != body_before))
-            if state['status'] == 'completed': (work / 'stop').write_text('', encoding='utf-8')
         return state['status']
 PAGE = ("<!doctype html><meta charset=utf-8><title>Trident</title><style>body{margin:0;background:#10141a}pre{white-space:pre-wrap;margin:0;padding:8px 14px;font:14px/1.4 Consolas,monospace}</style><div id=p></div>"
         "<script>const p=document.getElementById('p'),s=new EventSource('/events');s.onopen=()=>p.replaceChildren();"
@@ -446,10 +444,13 @@ class Hub(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type', mime); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
 class Feed:
     def __init__(self, root):
-        self.root, self.lock, self.boxes, self.events, self.colors, self.cursors = root, threading.Lock(), [], [], {}, {}
+        self.root, self.lock, self.boxes, self.events, self.colors = root, threading.Lock(), [], [], {}
+        self.cursors = {path: [path.stat().st_size, codecs.getincrementaldecoder('utf-8')()] for path in self.sources()}
         Hub.feed = self
+    def sources(self):
+        return sorted(self.root.glob('run_*.md')) + list(self.root.glob('story.md'))
     def follow(self):
-        for path in sorted(self.root.glob('run_*.md')) + list(self.root.glob('story.md')):
+        for path in self.sources():
             cursor = self.cursors.setdefault(path, [0, codecs.getincrementaldecoder('utf-8')()])
             with path.open('rb') as handle:
                 handle.seek(cursor[0]); text = cursor[1].decode(handle.read()); cursor[0] = handle.tell()
@@ -471,12 +472,14 @@ class FeedServer(ThreadingHTTPServer):
 def main(argv):
     if argv == ['serve']: return Feed(ROOT).serve()
     parser = argparse.ArgumentParser(prog='trident')
-    goal = parser.add_mutually_exclusive_group(required=True)
+    goal = parser.add_mutually_exclusive_group()
     goal.add_argument('--sentence'); goal.add_argument('--mind-file')
     for option in ('work', 'model', 'run'): parser.add_argument('--' + option, default='')
     args = parser.parse_args(argv)
-    sentence = args.sentence if args.sentence is not None else Path(args.mind_file).read_text(encoding='utf-8-sig')
-    if not sentence.strip(): raise ValueError('the human goal is empty')
+    if args.sentence is not None: sentence = args.sentence
+    elif args.mind_file is not None: sentence = Path(args.mind_file).read_text(encoding='utf-8-sig')
+    else: sentence = INITIATIVE
+    if not sentence.strip(): raise ValueError('the goal sentence is empty')
     return dict(completed=0, deadline=2, handover=2, blocked=3)[run_goal(args.work or ROOT, sentence.strip(), args.model, args.run)]
 if __name__ == '__main__':
     try: sys.exit(main(sys.argv[1:]))
