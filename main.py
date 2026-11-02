@@ -75,6 +75,28 @@ def send(*inputs):
 def pointer(x, y, flags):
     left, top, width, height = virtual_screen()
     send(INPUT(type=0, mi=MOUSEINPUT(round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)), 0, flags | 0xC001, 0, 0)))
+def click(x, y, pause=0.04):
+    point = (int(round(x)), int(round(y)))
+    pointer(*point, 0)
+    time.sleep(pause)
+    try:
+        pointer(*point, 2)
+        time.sleep(pause)
+    finally:
+        pointer(*point, 4)
+    return point
+def drag(x1, y1, x2, y2, steps=12, pause=0.018):
+    start, end = (int(round(x1)), int(round(y1))), (int(round(x2)), int(round(y2)))
+    pointer(*start, 0)
+    time.sleep(pause)
+    pointer(*start, 2)
+    try:
+        for index in range(1, int(steps) + 1):
+            pointer(int(round(x1 + (x2 - x1) * index / steps)), int(round(y1 + (y2 - y1) * index / steps)), 0)
+            time.sleep(pause)
+    finally:
+        pointer(*end, 4)
+    return end
 def chord(*keys):
     send(*(INPUT(type=1, ki=KEYBDINPUT(code, 0, transition, 0, 0)) for code, transition in keys))
 def focus(hwnd):
@@ -102,13 +124,12 @@ def to_screen(hwnd, x, y):
     point = wintypes.POINT(int(x), int(y))
     check(ClientToScreen(hwnd, ctypes.byref(point)))
     return point.x, point.y
-def stroke(hwnd, points, pause=0.008):
-    if len(points) < 2: raise ValueError('a stroke needs at least two client points')
-    focus(hwnd)
+def stroke(hwnd, points, pause=0.008, focus_window=True):
+    if focus_window: focus(hwnd)
     path = [to_screen(hwnd, x, y) for x, y in points]
     pointer(*path[0], 0); pointer(*path[0], 2)
-    for x, y in path[1:]: pointer(x, y, 0); time.sleep(pause)
-    pointer(*path[-1], 4)
+    for x, y in path[1:-1]: pointer(x, y, 0); time.sleep(pause)
+    pointer(*path[-1], 0); pointer(*path[-1], 4)
     return path
 def powershell(script, end=None):
     try: return subprocess.run(['powershell.exe', '-NoProfile', '-Command', script], check=True, timeout=remaining(end), creationflags=NO_WINDOW, capture_output=True, text=True).stdout
@@ -127,6 +148,14 @@ def paste(hwnd, text):
     focus(hwnd)
     chord((0x11, 0), (0x56, 0), (0x56, 2), (0x11, 2))
     time.sleep(0.1)
+def go(hwnd, url):
+    with lease('desktop', wait=True):
+        focus(hwnd)
+        chord((0x11, 0), (0x4C, 0), (0x4C, 2), (0x11, 2))
+        time.sleep(0.15)
+        paste(hwnd, url)
+        chord((0x0D, 0), (0x0D, 2))
+    return url
 @contextmanager
 def lease(name, end=None, wait=False):
     handle = check(CreateMutexW(None, False, 'Local\\Trident-' + name))
@@ -182,8 +211,8 @@ ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that 
          "Return {\"summary\":\"what actually happened, including failures, unfinished work and the real IDs and paths of workers and copies\",\"artifacts\":[\"existing output paths\"],\"body_changes\":[\"each generic helper or prompt sentence you added to the body, or empty\"]}.")
 CONTRACT = ("Return one JSON object without Markdown. You have every installed tool of this computer and the owner's standing authorization for research, files, applications, Chrome, images, shell and code; availability is proven by use, not assumed. "
             "The body is the file at body; your shell is PowerShell, so to use its helpers run one python -c that adds the body's directory to sys.path, imports main, and makes several calls at once rather than one process per call. "
-            "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and raised errors and no task words, then name it in body_changes. "
-            "Helpers: find_windows(title_suffix)->HWND list; focus(hwnd); client_size(hwnd)->(width,height); to_screen(hwnd,x,y)->physical point from client pixels; pointer(x,y,flags) in physical pixels, flags 0 move 2 left down 4 left up; chord(*(vk,0 down or 2 up)) types keys, not text; "
+            "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and no task words, then name it in body_changes. "
+            "Helpers: find_windows(title_suffix)->HWND list; focus(hwnd); client_size(hwnd)->(width,height); to_screen(hwnd,x,y)->physical point from client pixels; pointer(x,y,flags) in physical pixels, flags 0 move 2 left down 4 left up; click(x,y,pause=0.04)->that point; drag(x1,y1,x2,y2,steps=12,pause=0.018)->end point; chord(*(vk,0 down or 2 up)) types keys, not text; "
             "paste(hwnd,text) puts text on the clipboard and presses Ctrl+V in that window, for any text including Polish letters; stroke(hwnd,points,pause=0.008)->screen points; capture(path,end=None,region=None)->PNG of the whole virtual screen, or of region (left,top,width,height) in physical pixels; "
             "virtual_screen()->(left,top,width,height); lease('desktop',wait=True) is a context manager, hold it for each burst of input and release it after; "
             "decide(state,questions)->the Jev typesafe/jev-1.14 response, with answers (typed, with probabilities, over text and PNG image parts from image_part(path), question types choice, noul, score and box, every choice given the option change approach) and usage.cost; "
