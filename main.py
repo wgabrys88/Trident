@@ -311,7 +311,9 @@ class ACP:
         if kind == 'agent_message_chunk':
             if role == 'worker': self.mission.record('worker', update['content']['text'])
             else: self.text[session] += update['content']['text']
-        elif kind == 'agent_thought_chunk': self.thought[session] += update['content']['text']
+        elif kind == 'agent_thought_chunk':
+            if role == 'worker': self.mission.record('worker-thought', update['content']['text'])
+            else: self.thought[session] += update['content']['text']
         elif kind in ('tool_call', 'tool_call_update'):
             call = update['toolCallId']
             if kind == 'tool_call':

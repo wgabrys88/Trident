@@ -1,6 +1,6 @@
 # Trident — a living organism for any computer task
 
-Body: `main.py`, 487 lines, one file, branch `runner-h`. This revision closes the gaps found in the two bodies before it: the previous body `49d69ed` ran a job search on 2026-11-01 and the from-scratch rewrite `9ca06de` reshaped it into an organism; this one corrects every gap that review found in both. Written 2026-11-02. The body has not been launched since this edit; every statement about its behavior is derived from the source, and every measured number comes from the 2026-11-01 runs of the previous body, kept as lineage in section 14.
+Body: `main.py`, 489 lines, one file, branch `runner-h`. This revision journals a native subagent's reasoning the same way the body already journals that subagent's speech. Body `8406a29` was launched once, run `20261102_110254_6424` on 2026-11-02, and died at 170.3 s with `KeyError: '55ea63fb-4cd1-4863-ab28-a8a50ac045af'` when the first worker emitted `agent_thought_chunk`. The bodies before that are `49d69ed` (the 2026-11-01 job search) and `9ca06de` (the organism rewrite). Written 2026-11-02. This edit has not been launched. The crash numbers are from the `8406a29` run; the 2026-11-01 numbers stay in section 14.
 
 ---
 
@@ -19,7 +19,7 @@ Body: `main.py`, 487 lines, one file, branch `runner-h`. This revision closes th
 Read, completely, in this order, before judging anything:
 
 1. This file, end to end.
-2. `main.py`, end to end (487 lines; section 4 maps it).
+2. `main.py`, end to end (489 lines; section 4 maps it).
 3. `story.md` at the workspace root: the organism's own prose memory across runs, oldest at top, newest at bottom, voices `opening`, `judgment`, `hands`, `closing`.
 4. Every `run_*.md` journal, oldest first, including runs that did not finish.
 5. Every image under `evidence/<run>/`, in file order, hashing contents to spot duplicates.
@@ -84,12 +84,12 @@ Process tree: `python main.py` -> `powershell.exe agent.ps1 acp` -> Cursor's nod
 | 165-172 | memory and mind | `journal`, `choose_mind` |
 | 173-193 | prompts as data | `OBSERVER`, `ACTOR`, `CONTRACT` (verbatim in section 11) |
 | 194-241 | `Mission` | run identity, files, in-memory `state`, `record`, `narrate`, `artifact`, `observe`, `initialize`, `verify`, `initial` |
-| 242-363 | `ACP` | Cursor start with config inheritance, pumps, `rpc`, `notice`, `update`, `session`, `prompt`, `cancel` |
-| 364-421 | `run_goal` | the loop and the closing narration |
-| 422-471 | hub | `PAGE`, `Hub` (GET `/`, `/events`, `/md`), `Feed` (seeds cursors at end, tails `run_*.md` and `story.md`), `FeedServer` |
-| 472-487 | `main` | `serve` or a goal run; goal is optional; exit codes |
+| 242-365 | `ACP` | Cursor start with config inheritance, pumps, `rpc`, `notice`, `update` (worker speech is `worker`, worker reasoning is `worker-thought`, lines 311-316), `session`, `prompt`, `cancel` |
+| 366-423 | `run_goal` | the loop and the closing narration |
+| 424-473 | hub | `PAGE`, `Hub` (GET `/`, `/events`, `/md`), `Feed` (seeds cursors at end, tails `run_*.md` and `story.md`), `FeedServer` |
+| 474-489 | `main` | `serve` or a goal run; goal is optional; exit codes |
 
-Metrics at this commit: 487 physical lines, 38,497 bytes, 7,211 AST nodes, 52 functions, 13 classes, 0 comments, 0 docstrings.
+Metrics at this commit: 489 physical lines, 38,613 bytes, 7,234 AST nodes, 52 functions, 13 classes, 0 comments, 0 docstrings.
 
 ---
 
@@ -128,7 +128,7 @@ sequenceDiagram
   P->>P: finally: sha256 (after) · narrate closing -> story.md · record final
 ```
 
-Observer decisions (`run_goal`, lines 383-395):
+Observer decisions (`run_goal`, lines 385-397):
 
 ```mermaid
 stateDiagram-v2
@@ -147,12 +147,13 @@ stateDiagram-v2
   deadline --> [*]: exit 2
 ```
 
-What each role receives (`ACP.prompt`, lines 343-358):
+What each role receives (`ACP.prompt`, lines 345-360):
 
 - First prompt of a session: `ROLE + "\n" + CONTRACT + "\n" + JSON(initial()) + "\n" + JSON(update)`. `initial()` carries `goal, model, started, timing, criteria, sessions, now, python, body, work, memory{story, journal, evidence}, recent` where `recent` is the last 8,000 characters of `story.md`. A session refreshed by handover is new, so it gets this preamble again.
 - Observer updates carry `now, criteria, timing, checks, handover, screen` and, after the first act, `result, artifacts, tools` (the compact per-turn list: role, kind, title, status, locations). The latest witness capture is attached as an image.
 - Actor updates carry `action, findings, message, handover, screen`. No image is attached; `screen` holds the path and geometry of the latest capture, and the actor captures on demand.
 - Every prompt's full text is recorded in the journal as a `prompt` record (`time, role, session, request, bytes, image, text`). The reply must be one JSON object; anything else, or a stop reason other than `end_turn`, ends the run explicitly.
+- A native subagent is not a prompted session. `ACP.update` lines 311-316 journal its speech immediately as `worker` and its reasoning immediately as `worker-thought`. Neither chunk is appended to the actor's or the observer's `self.text` or `self.thought`. Line 357 still writes one `actor-thought` or `observer-thought` from the prompted session's own buffer, and line 360 still parses that session's own message as the JSON reply.
 
 ---
 
@@ -166,7 +167,7 @@ What each role receives (`ACP.prompt`, lines 343-358):
 | `evidence/<id>/...` | the actor | its own captures, crops, page text | what the organism chose to keep |
 | `agent/config`, `agent/data` | Cursor CLI, inherited on copies | Cursor's own state | `CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR` per workspace |
 
-Journal record kinds: `opening` is in the story, not the journal; the journal has `goal`, `sessions`, `acceptance`, `prompt` (with full text), `prompt-result` (seconds, raw response), `observer`/`actor` (the JSON reply), `observer-thought`/`actor-thought`, `tool` (full completed event with raw input/output), `permission`, `plan`, `worker`, `worker-spawned`, `stderr`, `cancel`, `final` (`status, elapsed_seconds, passed, criteria, failures, workers, action, handover, body_changed`), and any other ACP update by its own name.
+Journal record kinds: `opening` is in the story, not the journal; the journal has `goal`, `sessions`, `acceptance`, `prompt` (with full text), `prompt-result` (seconds, raw response), `observer`/`actor` (the JSON reply), `observer-thought`/`actor-thought` (one record per prompted turn, line 357), `tool` (full completed event with raw input/output), `permission`, `plan`, `worker` (a subagent's speech, one chunk at a time), `worker-thought` (a subagent's reasoning, one chunk at a time, lines 314-316), `worker-spawned`, `stderr`, `cancel`, `final` (`status, elapsed_seconds, passed, criteria, failures, workers, action, handover, body_changed`), and any other ACP update by its own name.
 
 ```mermaid
 flowchart TD
@@ -237,17 +238,17 @@ flowchart TD
   P -. "holds for the run" .-> WM
 ```
 
-- **Workspace mutex** (`run_goal`, line 366): two runs cannot share a `--work`; the second fails `Blocked` (exit 3).
+- **Workspace mutex** (`run_goal`, line 368): two runs cannot share a `--work`; the second fails `Blocked` (exit 3).
 - **Desktop mutex**: not held by the controller. The actor wraps each input burst in `with main.lease('desktop', wait=True):`; copies and subagents do the same, so one physical desktop is shared while file, web and Jev work run in parallel.
 - **Copies**: `python <body> --work <new dir> --model <slug> --sentence <subgoal>`. On start a copy inherits this workspace's `agent/config` (minus `acp-sessions` and the statsig cache) via `shutil.copytree` (`ACP.__init__`, lines 247-249), so it is logged in; it has its own `story.md`, journal and evidence, shares the desktop and account, and dies with the parent's job unless detached. The actor collects child results before finishing.
-- **Subagents**: Cursor-native; the journal records `worker-spawned` and their text as `worker`; `state['workers']` counts them into the closing paragraph.
+- **Subagents**: Cursor-native. `subagent_spawned` stores the child id as role `worker` and records `worker-spawned` (lines 330-333). Speech chunks are `worker`; reasoning chunks are `worker-thought` (lines 311-316). `state['workers']` counts them into the closing paragraph. The actor prompt stays open, and line 360 still parses only the actor's JSON.
 - **Model**: both sessions get `model=grok-4.7`, `reasoning_effort` and `fast` from the slug; copies are told to inherit the parent's slug.
 
 ---
 
 ## 10. Self-modification
 
-The contract states it once: the body you edit is `main.py`, and the body you edit is the body of your next run. No hot reload, nothing to reason about — every launch executes the file as it is on disk. Two rules shape edits: edit when a limitation is demonstrated; when the actor writes the same helper twice it adds one generic function to the body — real arguments, return values, raised errors, no task words — and names it in `body_changes`. The controller hashes the body at start and end (`run_goal`, lines 368 and 414) and the closing paragraph says whether it changed; `final` carries `body_changed`. Judge an edit by its effect on later runs, not by its existence.
+The contract states it once: the body you edit is `main.py`, and the body you edit is the body of your next run. No hot reload, nothing to reason about — every launch executes the file as it is on disk. Two rules shape edits: edit when a limitation is demonstrated; when the actor writes the same helper twice it adds one generic function to the body — real arguments, return values, raised errors, no task words — and names it in `body_changes`. The controller hashes the body at start and end (`run_goal`, lines 370 and 416) and the closing paragraph says whether it changed; `final` carries `body_changed`. Judge an edit by its effect on later runs, not by its existence.
 
 ---
 
@@ -300,7 +301,7 @@ Prerequisites: Python 3.11, the Cursor CLI at `%LOCALAPPDATA%\cursor-agent\agent
 
 - `--model` must be one of `grok-4.7-{low,medium,high,xhigh}[-fast]`; otherwise a slug inside the goal; otherwise `grok-4.7-medium-fast` (`choose_mind`, lines 168-172).
 - `--run` names the journal and evidence directory; omit it for `YYYYMMDD_HHMMSS_<pid>`. An existing evidence directory is an error, never reused.
-- Exit codes (`main`, lines 483): 0 completed, 2 deadline or handover ended, 3 blocked (including a busy workspace), 1 unhandled error or Ctrl+C. Read `$LASTEXITCODE` right after.
+- Exit codes (`main`, line 485): 0 completed, 2 deadline or handover ended, 3 blocked (including a busy workspace), 1 unhandled error or Ctrl+C. Read `$LASTEXITCODE` right after.
 - The foreground terminal prints the journal. The hub follows `run_*.md` and `story.md` in the body's directory and, since this revision, relays only content written after it starts.
 - Inspect results from `story.md`'s last `closing` paragraph, the journal's `final` record, and the artifacts.
 
@@ -322,7 +323,9 @@ Add a timing sentence only when it is real ("Finish within 35 minutes from this 
 
 ## 14. Lineage: the gaps this revision closes
 
-The full audit of the first body (`49d69ed`, tag `trident-jobs-cv-2026-11-01`) is in commit `85ddd69`; the first organism rewrite is `9ca06de`/`d426875`. Measured facts from the six 2026-11-01 runs of the first body: runs 1-5 died within about a minute each with `PermissionError` while the controller atomically replaced its state file during a model tool call; run 6 completed in 1,350.2 s on `grok-4.7-medium-fast`, 1,333.5 s of it inside 6 ACP round trips (98.8 %), 154 tools, 0 workers, 0 copies, 0 body edits, 90,383 B of controller text, 7.49 MB of PNG, zero token records.
+The full audit of the first body (`49d69ed`, tag `trident-jobs-cv-2026-11-01`) is in commit `85ddd69`; the first organism rewrite is `9ca06de`/`d426875`; the organism that closed that review is `8406a29`. Measured facts from the six 2026-11-01 runs of the first body: runs 1-5 died within about a minute each with `PermissionError` while the controller atomically replaced its state file during a model tool call; run 6 completed in 1,350.2 s on `grok-4.7-medium-fast`, 1,333.5 s of it inside 6 ACP round trips (98.8 %), 154 tools, 0 workers, 0 copies, 0 body edits, 90,383 B of controller text, 7.49 MB of PNG, zero token records.
+
+Body `8406a29` ran once: `20261102_110254_6424`, `grok-4.7-xhigh-fast`, started 2026-11-02T10:02:54Z, failed at 170.3 s, exit 1. One worker (`55ea63fb-4cd1-4863-ab28-a8a50ac045af`) was spawned at 11:05:42 local. The next `agent_thought_chunk` on that session raised `KeyError` because line 314 of that body always did `self.thought[session] += text`, and only `ACP.session` created those keys. `story.md` has `opening`, one `judgment`, and `closing`, and no `hands` paragraph. Passed criterion `c4` only. `body_changed` is false. The `cancel` record at the same timestamp is the `ExitStack` cancelling the still-open actor session `c9ebf9b7-36ac-4545-9198-77e60db512b4`. Stdout, including the traceback, is `Windows PowerShell.txt`. The journal is `run_20261102_110254_6424.md`. Both are gitignored.
 
 ```mermaid
 gantt
@@ -351,6 +354,7 @@ gantt
 | redundant memory files; completion signalled by a `stop` file | `goal.txt`, `stop`, `state.json`, `story.txt`, `ledger.md` gone; `story.md` opening and closing plus the exit code carry it (sections 1, 6) |
 | the last run kept only one prompt text | every prompt's full text is journaled (section 5) |
 | the hub replayed every old journal on start | `Feed` seeds cursors at the current file end (section 12) |
+| a worker's `agent_thought_chunk` indexed `self.thought` for a session `ACP.session` never created, so the first subagent thought killed run `20261102_110254_6424` | `update` journals worker reasoning immediately as `worker-thought` (lines 314-316), the same way worker speech is already journaled as `worker` (lines 311-313). Actor and observer reasoning still accumulate and flush once per prompt (line 357) |
 
 ---
 
@@ -388,9 +392,9 @@ Default to read-only forensic review and an actionable plan; write the report be
 
 ## 17. Verification state
 
-Static only, 2026-11-02, for this commit: `ast.parse` ok; in-memory `compile()` without import ok; tokenizer ok; undefined-name scan empty; forbidden-symbol scan (`os.replace`, `session/load`, `png_size`, `goal.txt`, `stop`, `loading`, `Desk`, `retry`) empty; all 15 helpers present and named in `CONTRACT`; `locate` arity 6, `session` arity 2; 0 comments, 0 docstrings; LF, no trailing whitespace.
+Static only, 2026-11-02, for this commit: `ast.parse` ok; in-memory `compile()` without import ok; tokenizer ok; 489 physical lines, 38,613 LF bytes, 7,234 AST nodes, 52 functions, 13 classes; 0 comments, 0 docstrings; LF, no trailing whitespace. Worker reasoning is lines 314-316. Actor and observer reasoning still use `self.thought[session] += ...` and still flush at line 357.
 
-Not done, by rule: any launch. Nothing in this body has executed. A first run should show: no `*.tmp` and no `PermissionError`; a `story.md` with `opening`, `judgment`, `hands`, `closing`; one witness capture per cycle (`0.png`, `1.png`, ...) with no `-before.png`; Jev calls as `execute` tools importing `main` and calling `decide` or `locate`, with `change approach` in any choice question and `usage.cost` in the result; a goal-less run adopting INITIATIVE; `worker-spawned` or copy launches when work was independent; a `final` record with `body_changed`; and, for a copy, whether the inherited `agent/config` actually authenticates Cursor in a fresh `--work` (the one thing config inheritance is meant to fix and the first thing to check if a copy fails to log in). If a reinvented primitive misbehaves, the proven reference is the tag `trident-jobs-cv-2026-11-01`.
+Launched before this edit, not after it: body `8406a29`, run `20261102_110254_6424`, died on the missing worker rule. This edit has not been launched. A run of this body that spawns a subagent should record `worker-thought` and then return the actor's JSON, so `story.md` gains a `hands` paragraph. Still unchecked on this edit: no `*.tmp` and no `PermissionError`; one witness capture per cycle (`0.png`, `1.png`, ...) with no `-before.png`; Jev calls as `execute` tools importing `main` and calling `decide` or `locate`, with `change approach` in any choice question and `usage.cost` in the result; a goal-less run adopting INITIATIVE; and, for a copy, whether the inherited `agent/config` actually authenticates Cursor in a fresh `--work`. If another primitive misbehaves, the proven reference for the 2026-11-01 hands is the tag `trident-jobs-cv-2026-11-01`.
 
 ---
 

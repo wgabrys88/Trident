@@ -1,22 +1,22 @@
 # Trident HOWTO — launching, scenarios, living mode, limits
 
-Tracked, committed. Written 2026-11-02 for the body that closes the gaps found in `49d69ed` and `9ca06de`. Everything about this body is code-derived; it has not been launched since the last edit. The proven reference for any primitive is the tag `trident-jobs-cv-2026-11-01`.
+Tracked, committed. Written 2026-11-02 for the body that journals a native subagent's reasoning as `worker-thought` (`main.py` lines 314-316; README section 4 is the line map, section 9 the session rule, section 14 the crash). Body `8406a29` was launched once and died on the missing branch. This edit has not been launched. The proven reference for the 2026-11-01 hands is the tag `trident-jobs-cv-2026-11-01`.
 
 ## 1. What a fresh agent gets from the latest commit message, and what it does not
 
 `git show -s --format=%B <this commit>` is a complete first prompt: what to read, in what order, how to reconstruct runs, the evidence rules, the five perspectives, research rules, review restrictions and the deliverable format. It tells an agent how to evaluate. It is not enough to evaluate unless:
 
 1. The agent works on this machine or a copy of this directory including the ignored runtime files. A git clone has only `main.py`, `README.md`, `HOWTO.md`, `.gitignore`.
-2. At least one run of this body exists. Right now the only runs on disk are from the first body.
-3. The workspace does not mislead. It still holds the first body's memory and reports (`state.json`, `story.txt`, `ledger.md`, `hub_*.md`, `state.json.*.tmp`, `story.txt.*.tmp`, `prompt.txt`, `main.py.before_file_diagnostics.tmp`, `COMMIT_MESSAGE.md`, `REVIEW_BRIEF.md`, `FILE_PERSISTENCE_DIAGNOSIS.md`, `file_lock_diagnostics.jsonl`, two terminal captures, and the old `run_2026110*.md`). They describe mechanisms this body no longer has. Optional, your call because it moves evidence:
+2. At least one run exists if you want to judge behavior rather than source. On this machine, body `8406a29` has `run_20261102_110254_6424.md`: it failed with `KeyError` on a worker thought and has no `hands` paragraph. This edit has no run yet. `run_20261101*.md` journals are the first body, `49d69ed`.
+3. The workspace does not mislead. It still holds the first body's memory and reports (`state.json`, `story.txt`, `ledger.md`, `hub_*.md`, `state.json.*.tmp`, `story.txt.*.tmp`, `prompt.txt`, `main.py.before_file_diagnostics.tmp`, `COMMIT_MESSAGE.md`, `REVIEW_BRIEF.md`, `FILE_PERSISTENCE_DIAGNOSIS.md`, `file_lock_diagnostics.jsonl`, and the old `run_20261101*.md`). They describe mechanisms this body no longer has. `story.md`, `run_20261102_110254_6424.md`, `evidence\20261102_110254_6424\`, and `Windows PowerShell.txt` are the `8406a29` crash, not the first body. Optional, your call because it moves evidence:
 
 ```powershell
 $work = 'C:\Users\eb-wjt\Downloads\Jarvis\Trident'
 New-Item -ItemType Directory "$work\archive\body-49d69ed-2026-11-01" -Force
-Move-Item "$work\state.json*","$work\story.txt*","$work\ledger.md","$work\hub_*.md","$work\prompt.txt","$work\run_2026110*.md","$work\*.tmp","$work\COMMIT_MESSAGE.md","$work\REVIEW_BRIEF.md","$work\FILE_PERSISTENCE_DIAGNOSIS.md","$work\file_lock_diagnostics.jsonl","$work\*PowerShell*.txt" "$work\archive\body-49d69ed-2026-11-01\"
+Move-Item "$work\state.json*","$work\story.txt*","$work\ledger.md","$work\hub_*.md","$work\prompt.txt","$work\run_20261101*.md","$work\*.tmp","$work\COMMIT_MESSAGE.md","$work\REVIEW_BRIEF.md","$work\FILE_PERSISTENCE_DIAGNOSIS.md","$work\file_lock_diagnostics.jsonl" "$work\archive\body-49d69ed-2026-11-01\"
 ```
 
-Keep `evidence\` and `applications\`; the audit references them. If you archive, tell the next agent where. Also tell it explicitly whether it may implement; review is read-only by default.
+Leave `story.md`, `run_20261102_110254_6424.md`, `evidence\20261102_110254_6424\`, and `Windows PowerShell.txt` where they are. The old glob `run_2026110*.md` would have taken the crash journal with the first-body journals, and `*PowerShell*.txt` would have taken its stdout. Keep `evidence\` and `applications\`; the audit references them. If you archive, tell the next agent where. Also tell it explicitly whether it may implement; review is read-only by default.
 
 ## 2. Before the first launch
 
@@ -98,7 +98,7 @@ The authorization prefix matters most here, because the organism may act on live
 
 - **Self-evaluation**: the observer writes criteria about the result, scores them only on inspected artifacts, and `verify()` refuses completion without an evidence path and a reason per criterion and with any tool still pending. Its `message` each turn is the memory.
 - **Replanning**: no plan object. Every observer turn re-decides from the latest witness capture, the actor summary and the tool list. The actor changes method within a turn. A `handover` with `continue=true` and `fresh=["actor"]` or `fresh=["observer"]` gives that role a new empty context carrying the handover instructions; `fresh=[]` just redirects without clearing.
-- **Session control**: one run is two sessions. Either can now be refreshed by handover when its context grows tangled; a refreshed session is rebuilt from the role prompt, the contract, `initial()` and the story tail. A new run is still the full reset, and `story.md` carries what mattered.
+- **Session control**: one run has two prompted sessions, actor and observer. Either can be refreshed by handover when its context grows tangled; a refreshed session is rebuilt from the role prompt, the contract, `initial()` and the story tail. A native subagent is an extra session Cursor creates. Its speech is journaled as `worker` and its reasoning as `worker-thought` (`main.py` lines 311-316; README section 9). Those chunks are not the actor's JSON reply. A new run is still the full reset, and `story.md` carries what mattered.
 - **Cost**: no budget in code, by design. Your levers: the model slug, a verbatim time clause, and the sentence. The organism's levers: Jev (cheap) instead of Grok vision, copies on cheaper slugs, and batching helper calls into one Python process. Visibility: Grok cost only on your Cursor usage page (ACP reports no tokens); Jev cost per call in the journal and on OpenRouter.
 
 ## 7. Known complications and limits
@@ -111,8 +111,8 @@ The authorization prefix matters most here, because the organism may act on live
 6. **Batching.** The shell is PowerShell; the contract tells the organism to run one `python -c` per burst with several helper calls, not one process per call. Watch the journal for many tiny `execute` tools; that is the inefficiency to correct next if it persists.
 7. **Workspace mutex**: a second run on the same `--work` exits 3 immediately.
 8. **No `stop` file.** Completion is the exit code (0) and the last `closing` paragraph in `story.md`. Nothing to delete between runs.
-9. **Journals are large** because every completed tool and every prompt text is recorded; read by the `## HH:MM:SS kind` headers.
-10. **Nothing in this body has executed.** If clicks land off, captures are black, paste types nothing, the mutex never releases, or ACP replies are misread, compare the function with the same one at tag `trident-jobs-cv-2026-11-01`.
+9. **Journals are large** because every completed tool and every prompt text is recorded; read by the `## HH:MM:SS kind` headers. `worker-thought` is a subagent's reasoning chunk. `actor-thought` and `observer-thought` are still one record per prompted turn.
+10. **This edit has not been launched.** Body `8406a29` was, once: run `20261102_110254_6424` died at `ACP.update` when a worker thought arrived, and `story.md` has no `hands` paragraph for it. A run of this body that spawns a subagent should record `worker-thought` and then finish the actor turn. If clicks land off, captures are black, paste types nothing, the mutex never releases, or some other ACP reply is misread, compare the function with the same one at tag `trident-jobs-cv-2026-11-01`.
 
 ## 8. Reading a finished run
 
@@ -123,4 +123,4 @@ Get-ChildItem "$work\evidence" | Sort-Object LastWriteTime | Select-Object -Last
 $LASTEXITCODE                                                            # right after the run: 0 / 2 / 3 / 1
 ```
 
-Then open the artifacts the closing paragraph names and judge them yourself. The organism's "completed" means its criteria passed on inspected evidence; it does not mean the work is good enough for you.
+Then open the artifacts the closing paragraph names and judge them yourself. A failed run can have `closing` and no `hands`; that is what `20261102_110254_6424` looks like. The organism's "completed" means its criteria passed on inspected evidence; it does not mean the work is good enough for you.
