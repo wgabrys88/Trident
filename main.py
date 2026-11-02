@@ -128,8 +128,11 @@ def stroke(hwnd, points, pause=0.008, focus_window=True):
     if focus_window: focus(hwnd)
     path = [to_screen(hwnd, x, y) for x, y in points]
     pointer(*path[0], 0); pointer(*path[0], 2)
-    for x, y in path[1:-1]: pointer(x, y, 0); time.sleep(pause)
-    pointer(*path[-1], 0); pointer(*path[-1], 4)
+    try:
+        for x, y in path[1:-1]: pointer(x, y, 0); time.sleep(pause)
+        pointer(*path[-1], 0)
+    finally:
+        pointer(*path[-1], 4)
     return path
 def powershell(script, end=None):
     try: return subprocess.run(['powershell.exe', '-NoProfile', '-Command', script], check=True, timeout=remaining(end), creationflags=NO_WINDOW, capture_output=True, text=True).stdout
