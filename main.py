@@ -1,4 +1,4 @@
-import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.request
+import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
 from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from datetime import datetime, timezone
@@ -178,7 +178,10 @@ def job_object(resources):
     return job
 def post(url, payload, timeout, headers):
     request = urllib.request.Request(url, json.dumps(payload).encode('utf-8'), {**headers, 'Content-Type': 'application/json'})
-    with urllib.request.urlopen(request, timeout=timeout) as response: return json.loads(response.read())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response: return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f'HTTP Error {error.code}: {error.read().decode()}') from error
 def image_part(path):
     return dict(type='image_url', image_url=dict(url='data:image/png;base64,' + base64.b64encode(Path(path).read_bytes()).decode()))
 def decide(state, questions):
