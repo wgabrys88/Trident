@@ -355,6 +355,7 @@ class ACP:
         elif kind in ('tool_call', 'tool_call_update'):
             call = update['toolCallId']
             if kind == 'tool_call':
+                if self.thought.get(session): self.mission.record(role + '-thought', self.thought[session]); self.thought[session] = ''
                 if self.text.get(session): self.mission.record(role, self.text[session]); self.text[session] = ''
                 self.tools[call] = dict(role=role, session=session, **update)
             else: self.tools[call].update(update)
