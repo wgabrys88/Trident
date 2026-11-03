@@ -272,7 +272,7 @@ class Mission:
         if pending: raise ValueError('completion with unfinished tools: ' + ', '.join(pending))
         remaining(self.end)
     def initial(self):
-        return dict(goal=self.state['goal'], model=self.state['model'], started=self.state['started'], timing=self.state['timing'], criteria=self.state['criteria'], sessions=self.state['sessions'], now=utc(),
+        return dict(goal=self.state['goal'], model=self.state['model'], started=self.state['started'], sessions=self.state['sessions'], now=utc(),
                     python=sys.executable, body=str(BODY), work=str(self.work), memory=dict(story=str(self.story), journal=str(self.journal), evidence=str(self.evidence)), recent=self.story.read_text(encoding='utf-8')[-8000:])
 class ACP:
     def __init__(self, mission, resources):
