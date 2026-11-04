@@ -211,6 +211,7 @@ OBSERVER = ("Return one JSON object without Markdown. You are Trident's observer
             "An action is one stage whose result the next look can judge; work that can proceed together is one stage. "
             "Decisions are act, complete, blocked or handover. Findings carry only criteria whose status changed; a file, a green command or a confident summary is not evidence until you inspected its content. Complete only when every criterion is supported by inspected artifacts. "
             "Your message is the organism's memory: plain prose on what was tried, what was seen, what was learned, appended to story.md and read by future runs. Add no restriction, budget, deadline or ban the human did not write; prefer parallel work and fresh routes over repeating one. "
+            "At each judgment redraw memory.png in place, one image of 1568 by 1568 pixels, with text, shapes, timelines and pasted crops, so a glance shows what is done, in progress and next. Condense or erase parts of it when it gets crowded. "
             "Handover is {\"continue\":true,\"fresh\":[\"observer\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear your own context; continue false ends the run for a human to take over.")
 ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that works on this computer. "
          "Research the internet by default and take current facts from it. Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. "
@@ -226,7 +227,7 @@ CONTRACT = ("You have every installed tool of this computer and the owner's stan
             "locate(path,description,left,top,width,height) captures that physical region, asks Jev, and returns {x,y,present,confidence} in physical pixels. "
             "Do not repeat a tool or route because it worked once; vary source and method. "
             "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy inherits this workspace's Cursor configuration, owns its own workspace and story, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
-            "Memory: story.md is append-only prose shared by every run in this workspace, run_*.md is this run's journal, evidence/<run>/ holds captures. SendInput does not prove application effect; inspect.")
+            "Memory: story.md is append-only prose shared by every run in this workspace, run_*.md is this run's journal, evidence/<run>/ holds captures. A new session is shown memory.png instead of a story tail. The observer alone redraws that image. The screen capture outranks it. SendInput does not prove application effect; inspect.")
 class Mission:
     def __init__(self, work, goal, model, run, started):
         self.work, self.end = work, None
@@ -274,7 +275,7 @@ class Mission:
         remaining(self.end)
     def initial(self):
         return dict(goal=self.state['goal'], model=self.state['model'], started=self.state['started'], sessions=self.state['sessions'], now=utc(),
-                    python=sys.executable, body=str(BODY), work=str(self.work), memory=dict(story=str(self.story), journal=str(self.journal), evidence=str(self.evidence)), recent=self.story.read_text(encoding='utf-8')[-8000:])
+                    python=sys.executable, body=str(BODY), work=str(self.work), memory=dict(story=str(self.story), journal=str(self.journal), evidence=str(self.evidence)))
 class ACP:
     def __init__(self, mission, resources):
         self.mission, self.inbox, self.counter = mission, queue.Queue(), 0
@@ -387,10 +388,14 @@ class ACP:
         session = self.mission.state['sessions'][role]
         self.active, self.text[session], self.thought[session], self.turn = session, '', '', []
         text = json.dumps(update, ensure_ascii=False)
-        if session not in self.ready:
+        fresh = session not in self.ready
+        if fresh:
             text = '\n'.join(((OBSERVER if role == 'observer' else ACTOR), CONTRACT, json.dumps(self.mission.initial(), ensure_ascii=False), text))
             self.ready.add(session)
         content = [dict(type='text', text=text)]
+        if fresh:
+            picture = self.mission.work / 'memory.png'
+            if picture.is_file(): content += [dict(type='text', text=str(picture)), dict(type='image', mimeType='image/png', data=base64.b64encode(picture.read_bytes()).decode())]
         if image: content += [dict(type='text', text=str(image)), dict(type='image', mimeType='image/png', data=base64.b64encode(Path(image).read_bytes()).decode())]
         self.mission.record('prompt', dict(time=utc(), role=role, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None, text=text))
         result = self.rpc('session/prompt', dict(sessionId=session, prompt=content))
