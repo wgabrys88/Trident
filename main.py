@@ -437,7 +437,7 @@ def run_goal(work, goal, model, run):
                     elif verdict != 'act': raise ValueError('unknown observer decision: ' + verdict)
                     step += 1
                     state['status'] = 'acting'
-                    state['result'] = result = client.prompt('actor', dict(action=state['action'], message=decision['message'], handover=state['handover'], screen=state['screen']), None)
+                    state['result'] = result = client.prompt('actor', dict(action=state['action'], handover=state['handover'], screen=state['screen']), None)
                     if result.strip(): mission.narrate('hands', result)
                     witness = mission.observe(str(step))
                     state['status'] = 'observing'
