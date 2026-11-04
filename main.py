@@ -31,6 +31,7 @@ SetForegroundWindow = signature(user32, 'SetForegroundWindow', wintypes.BOOL, wi
 GetForegroundWindow = signature(user32, 'GetForegroundWindow', wintypes.HWND)
 GetClientRect = signature(user32, 'GetClientRect', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 ClientToScreen = signature(user32, 'ClientToScreen', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.POINT))
+GetWindowRect = signature(user32, 'GetWindowRect', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 GetSystemMetrics = signature(user32, 'GetSystemMetrics', ctypes.c_int, ctypes.c_int)
 CreateJobObjectW = signature(kernel32, 'CreateJobObjectW', wintypes.HANDLE, wintypes.LPVOID, wintypes.LPCWSTR)
 SetInformationJobObject = signature(kernel32, 'SetInformationJobObject', wintypes.BOOL, wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
@@ -75,6 +76,10 @@ def send(*inputs):
 def pointer(x, y, flags):
     left, top, width, height = virtual_screen()
     send(INPUT(type=0, mi=MOUSEINPUT(round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)), 0, flags | 0xC001, 0, 0)))
+def wheel(x, y, notches):
+    left, top, width, height = virtual_screen()
+    send(INPUT(type=0, mi=MOUSEINPUT(round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)), (int(notches) * 120) & 0xFFFFFFFF, 0x0800 | 0xC001, 0, 0)))
+    return int(x), int(y)
 def click(x, y, pause=0.04):
     point = (int(round(x)), int(round(y)))
     pointer(*point, 0)
@@ -124,6 +129,10 @@ def to_screen(hwnd, x, y):
     point = wintypes.POINT(int(x), int(y))
     check(ClientToScreen(hwnd, ctypes.byref(point)))
     return point.x, point.y
+def frame(hwnd):
+    rect = wintypes.RECT()
+    check(GetWindowRect(hwnd, ctypes.byref(rect)))
+    return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
 def stroke(hwnd, points, pause=0.008, focus_window=True):
     if focus_window: focus(hwnd)
     path = [to_screen(hwnd, x, y) for x, y in points]
@@ -192,6 +201,21 @@ def decide(state, questions):
         if question['type'] == 'choice': question['criteria']['change approach'] = 'The current route is not producing new evidence; a different tool, source or method is needed.'
     key = (ROOT.parent / '.env').read_text(encoding='utf-8').strip()
     return post(DECISIONS, dict(model=JEV, state=state, questions=questions), 60, {'Authorization': 'Bearer ' + key})
+def elements(hwnd):
+    raw = powershell("$ErrorActionPreference='Stop';[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::InvariantCulture;Add-Type -AssemblyName UIAutomationClient;"
+                     f"$root=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]{int(hwnd)});"
+                     "$all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition);"
+                     "$list=New-Object System.Collections.Generic.List[object];"
+                     "foreach($e in $all){$c=$e.Current;$r=$c.BoundingRectangle;if($c.IsOffscreen -or $r.Width -lt 2 -or $r.Height -lt 2){continue};"
+                     "$selected=$null;$value=$null;$minimum=$null;$maximum=$null;"
+                     "try{$selected=$e.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected}catch{};"
+                     "try{$range=$e.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current;$value=$range.Value;$minimum=$range.Minimum;$maximum=$range.Maximum}catch{};"
+                     "$list.Add([ordered]@{name=[string]$c.Name;type=[string]$c.ControlType.ProgrammaticName;automation_id=[string]$c.AutomationId;class_name=[string]$c.ClassName;"
+                     "left=[int][Math]::Round($r.X);top=[int][Math]::Round($r.Y);width=[int][Math]::Round($r.Width);height=[int][Math]::Round($r.Height);access_key=[string]$c.AccessKey;"
+                     "selected=$selected;value=$value;minimum=$minimum;maximum=$maximum})};"
+                     "if($list.Count){$list|ConvertTo-Json -Compress -Depth 4}").strip()
+    data = json.loads(raw) if raw else []
+    return [data] if isinstance(data, dict) else data
 def locate(path, description, left, top, width, height):
     answers = decide([f'A {width} by {height} pixel screen region:', image_part(capture(path, region=(left, top, width, height)))],
                      dict(target=dict(type='box', instructions=f'{description}, in the region'), present=dict(type='noul', instructions=f'The region shows {description}.')))['answers']
@@ -225,6 +249,7 @@ CONTRACT = ("You have every installed tool of this computer and the owner's stan
             "virtual_screen()->(left,top,width,height); lease('desktop',wait=True) is a context manager, hold it for each burst of input and release it after; "
             "decide(state,questions)->the Jev typesafe/jev-1.14 response, with answers (typed, with probabilities, over text and PNG image parts from image_part(path), every choice given the option change approach) and usage.cost; questions map ids to {type, instructions, criteria}; noul criteria are optional {true, false}; choice criteria are {option: description}; score criteria are an ordered array of 2 to 10 levels, from low to high; box needs an image in state and takes no criteria; several images in one state, each image side 280 to 1568 pixels; "
             "locate(path,description,left,top,width,height) captures that physical region, asks Jev, and returns {x,y,present,confidence} in physical pixels. "
+            "wheel(x,y,notches) scrolls at that point; frame(hwnd)->(left,top,width,height) of the window; elements(hwnd)->visible controls with name, type, bounds, selection and value. "
             "Do not repeat a tool or route because it worked once; vary source and method. "
             "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy inherits this workspace's Cursor configuration, owns its own workspace and story, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
             "Memory: story.md is append-only prose shared by every run in this workspace, run_*.md is this run's journal, evidence/<run>/ holds captures. A new session is shown memory.png instead of a story tail. The observer alone redraws that image. The screen capture outranks it. SendInput does not prove application effect; inspect.")
