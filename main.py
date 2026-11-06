@@ -32,6 +32,10 @@ GetForegroundWindow = signature(user32, 'GetForegroundWindow', wintypes.HWND)
 GetClientRect = signature(user32, 'GetClientRect', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
 ClientToScreen = signature(user32, 'ClientToScreen', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.POINT))
 GetWindowRect = signature(user32, 'GetWindowRect', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+GetClassNameW = signature(user32, 'GetClassNameW', ctypes.c_int, wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+GetWindowThreadProcessId = signature(user32, 'GetWindowThreadProcessId', wintypes.DWORD, wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+OpenProcess = signature(kernel32, 'OpenProcess', wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+QueryFullProcessImageNameW = signature(kernel32, 'QueryFullProcessImageNameW', wintypes.BOOL, wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
 GetSystemMetrics = signature(user32, 'GetSystemMetrics', ctypes.c_int, ctypes.c_int)
 CreateJobObjectW = signature(kernel32, 'CreateJobObjectW', wintypes.HANDLE, wintypes.LPVOID, wintypes.LPCWSTR)
 SetInformationJobObject = signature(kernel32, 'SetInformationJobObject', wintypes.BOOL, wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
@@ -89,6 +93,7 @@ def click(x, y, pause=0.04):
         time.sleep(pause)
     finally:
         pointer(*point, 4)
+    time.sleep(pause)
     return point
 def drag(x1, y1, x2, y2, steps=12, pause=0.018):
     start, end = (int(round(x1)), int(round(y1))), (int(round(x2)), int(round(y2)))
@@ -102,6 +107,43 @@ def drag(x1, y1, x2, y2, steps=12, pause=0.018):
     finally:
         pointer(*end, 4)
     return end
+def bend(start, control, end, amplitude, samples, rng, jitter=2.0):
+    ax, ay = float(start[0]), float(start[1])
+    bx, by = float(control[0]), float(control[1])
+    cx, cy = float(end[0]), float(end[1])
+    count = int(samples)
+    if count < 1: raise ValueError('samples')
+    phase = rng.uniform(0, math.tau)
+    first = rng.uniform(1.4, 3.1)
+    second = rng.uniform(4.0, 7.2)
+    points = []
+    for index in range(count + 1):
+        t = index / count
+        u = 1.0 - t
+        x = u * u * ax + 2 * u * t * bx + t * t * cx
+        y = u * u * ay + 2 * u * t * by + t * t * cy
+        dx = 2 * u * (bx - ax) + 2 * t * (cx - bx)
+        dy = 2 * u * (by - ay) + 2 * t * (cy - by)
+        length = math.hypot(dx, dy) or 1.0
+        env = math.sin(math.pi * t) ** 0.75
+        wave = 0.7 * math.sin(first * math.tau * t + phase) + 0.3 * math.sin(second * math.tau * t + phase * 1.35)
+        side = amplitude * env * wave + rng.uniform(-0.25, 0.25) * amplitude * env
+        along = rng.uniform(-jitter, jitter)
+        points.append((x + (-dy / length) * side + (dx / length) * along, y + (dx / length) * side + (dy / length) * along))
+    return points
+def hook(start, end, bow, amplitude, samples, rng):
+    dx, dy = float(end[0]) - float(start[0]), float(end[1]) - float(start[1])
+    length = math.hypot(dx, dy) or 1.0
+    bulge = min(max(0.5 + rng.uniform(-0.08, 0.08), 0.28), 0.74)
+    px, py = -dy / length, dx / length
+    side = bow * rng.uniform(0.85, 1.15)
+    control = (float(start[0]) + dx * bulge + px * side, float(start[1]) + dy * bulge + py * side)
+    points = bend(start, control, end, amplitude, samples, rng, jitter=rng.uniform(1.4, 2.6))
+    if rng.random() < 0.5 and len(points) > 5:
+        x1, y1 = points[-1]
+        x0, y0 = points[-2]
+        points.append((x1 + (x1 - x0) * rng.uniform(0.2, 0.65), y1 + (y1 - y0) * rng.uniform(0.2, 0.65)))
+    return points
 def chord(*keys):
     send(*(INPUT(type=1, ki=KEYBDINPUT(code, 0, transition, 0, 0)) for code, transition in keys))
 def focus(hwnd):
@@ -133,6 +175,18 @@ def frame(hwnd):
     rect = wintypes.RECT()
     check(GetWindowRect(hwnd, ctypes.byref(rect)))
     return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
+def window_info(hwnd):
+    title, class_name = ctypes.create_unicode_buffer(512), ctypes.create_unicode_buffer(256)
+    GetWindowTextW(hwnd, title, 512)
+    GetClassNameW(hwnd, class_name, 256)
+    pid = wintypes.DWORD()
+    GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    image, handle = '', OpenProcess(0x1000, False, pid.value)
+    if handle:
+        buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+        if QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)): image = buf.value
+        CloseHandle(handle)
+    return dict(hwnd=int(hwnd), title=title.value, class_name=class_name.value, pid=int(pid.value), image=image, frame=frame(hwnd), iconic=bool(IsIconic(hwnd)))
 def stroke(hwnd, points, pause=0.008, focus_window=True):
     if focus_window: focus(hwnd)
     path = [to_screen(hwnd, x, y) for x, y in points]
@@ -142,6 +196,7 @@ def stroke(hwnd, points, pause=0.008, focus_window=True):
         pointer(*path[-1], 0)
     finally:
         pointer(*path[-1], 4)
+    time.sleep(max(pause, 0.02))
     return path
 def powershell(script, end=None):
     try: return subprocess.run(['powershell.exe', '-NoProfile', '-Command', script], check=True, timeout=remaining(end), creationflags=NO_WINDOW, capture_output=True, text=True).stdout
@@ -209,6 +264,7 @@ def elements(hwnd):
                      "foreach($e in $all){$c=$e.Current;$r=$c.BoundingRectangle;if($c.IsOffscreen -or $r.Width -lt 2 -or $r.Height -lt 2){continue};"
                      "$selected=$null;$value=$null;$minimum=$null;$maximum=$null;"
                      "try{$selected=$e.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Current.IsSelected}catch{};"
+                     "try{if($null -eq $selected){$selected=($e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)}}catch{};"
                      "try{$range=$e.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern).Current;$value=$range.Value;$minimum=$range.Minimum;$maximum=$range.Maximum}catch{};"
                      "$list.Add([ordered]@{name=[string]$c.Name;type=[string]$c.ControlType.ProgrammaticName;automation_id=[string]$c.AutomationId;class_name=[string]$c.ClassName;"
                      "left=[int][Math]::Round($r.X);top=[int][Math]::Round($r.Y);width=[int][Math]::Round($r.Width);height=[int][Math]::Round($r.Height);access_key=[string]$c.AccessKey;"
