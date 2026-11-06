@@ -27,6 +27,8 @@ GetWindowTextW = signature(user32, 'GetWindowTextW', ctypes.c_int, wintypes.HWND
 IsWindowVisible = signature(user32, 'IsWindowVisible', wintypes.BOOL, wintypes.HWND)
 IsIconic = signature(user32, 'IsIconic', wintypes.BOOL, wintypes.HWND)
 ShowWindow = signature(user32, 'ShowWindow', wintypes.BOOL, wintypes.HWND, ctypes.c_int)
+IsZoomed = signature(user32, 'IsZoomed', wintypes.BOOL, wintypes.HWND)
+SetWindowPos = signature(user32, 'SetWindowPos', wintypes.BOOL, wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT)
 SetForegroundWindow = signature(user32, 'SetForegroundWindow', wintypes.BOOL, wintypes.HWND)
 GetForegroundWindow = signature(user32, 'GetForegroundWindow', wintypes.HWND)
 GetClientRect = signature(user32, 'GetClientRect', wintypes.BOOL, wintypes.HWND, ctypes.POINTER(wintypes.RECT))
@@ -146,6 +148,10 @@ def hook(start, end, bow, amplitude, samples, rng):
     return points
 def chord(*keys):
     send(*(INPUT(type=1, ki=KEYBDINPUT(code, 0, transition, 0, 0)) for code, transition in keys))
+def place(hwnd, left, top, width, height):
+    if IsIconic(hwnd) or IsZoomed(hwnd): ShowWindow(hwnd, 9)
+    check(SetWindowPos(hwnd, None, int(left), int(top), int(width), int(height), 0x0044))
+    return frame(hwnd)
 def focus(hwnd):
     if IsIconic(hwnd): ShowWindow(hwnd, 9)
     if GetForegroundWindow() != hwnd:
