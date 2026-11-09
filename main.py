@@ -957,11 +957,11 @@ class Feed:
             self.view.ingest(text)
             if self.view.legacy:
                 self._legacy(path)
-                if self.view.use_tty(): self.view.paint()
-                else: sys.stdout.write('this earlier form is not projected\n'); sys.stdout.flush()
-                return
+                shown = 'this earlier form is not projected\n'
+            else: shown = text
             if self.view.use_tty(): self.view.paint()
-            else: sys.stdout.write(text); sys.stdout.flush()
+            elif shown: sys.stdout.write(shown); sys.stdout.flush()
+            if self.view.legacy: return
             for seq in sorted(self.view.dirty): self.upsert(self.view.event(seq))
             self.view.dirty.clear()
     def serve(self):
