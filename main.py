@@ -523,6 +523,10 @@ class Journal:
     def close(self, session, channels=('text', 'thought')):
         session = str(session)
         for channel in channels: self.open.pop((session, channel), None)
+    def _dirty_session(self, session):
+        session = str(session)
+        for msg in self.messages:
+            if msg['session'] == session and msg['role'] != 'run': self.dirty.add(msg['seq'])
     def set_usage(self, session, context=None, cost=None, cost_op='keep'):
         info = self.usage.setdefault(str(session), {'context': 'unknown', 'cost': None})
         if context is not None: info['context'] = context
@@ -532,8 +536,7 @@ class Journal:
         if cost_op == 'clear': line += ' cost='
         elif info.get('cost'): line += f" cost={info['cost']}"
         self.write(line + '\n')
-        for msg in self.messages:
-            if msg['session'] == str(session) and msg['role'] != 'run': self.dirty.add(msg['seq'])
+        self._dirty_session(session)
         self.paint()
     def event(self, seq):
         msg = self.index[seq]
@@ -591,8 +594,7 @@ class Journal:
         info['context'] = context
         if op == 'set': info['cost'] = cost
         elif op == 'clear': info['cost'] = None
-        for msg in self.messages:
-            if msg['session'] == str(session) and msg['role'] != 'run': self.dirty.add(msg['seq'])
+        self._dirty_session(session)
         self.sync_window()
 def choose_mind(goal, model):
     if model:
