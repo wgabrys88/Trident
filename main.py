@@ -111,6 +111,7 @@ def drag(x1, y1, x2, y2, steps=12, pause=0.018):
             time.sleep(pause)
     finally:
         pointer(*end, 4)
+    time.sleep(pause)
     return end
 def bend(start, control, end, amplitude, samples, rng, jitter=2.0):
     ax, ay = float(start[0]), float(start[1])
