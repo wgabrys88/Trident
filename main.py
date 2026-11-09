@@ -4,6 +4,7 @@ from ctypes import wintypes
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from PIL import ImageGrab
 BODY = Path(__file__).resolve()
 ROOT = BODY.parent
 HUB_PORT = 8765
@@ -213,11 +214,7 @@ def powershell(script, end=None):
     except subprocess.TimeoutExpired: raise Deadline('goal deadline reached') from None
 def capture(path, end=None, region=None):
     left, top, width, height = region or virtual_screen()
-    target = str(Path(path)).replace("'", "''")
-    powershell("$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Drawing;"
-               "Add-Type 'using System.Runtime.InteropServices;public class Dpi{[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();}';[Dpi]::SetProcessDPIAware()|Out-Null;"
-               f"$b=New-Object System.Drawing.Bitmap {width},{height};$g=[System.Drawing.Graphics]::FromImage($b);$g.CopyFromScreen({left},{top},0,0,$b.Size);"
-               f"$b.Save('{target}',[System.Drawing.Imaging.ImageFormat]::Png);$g.Dispose();$b.Dispose()", end)
+    ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True).save(path)
     return Path(path)
 def paste(hwnd, text):
     encoded = base64.b64encode(text.encode('utf-8')).decode()
