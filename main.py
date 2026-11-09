@@ -917,7 +917,7 @@ class Feed:
             self.view.ingest(text)
             if self.view.legacy:
                 self._legacy(path)
-                if not self.view.use_tty(): sys.stdout.write(text); sys.stdout.flush()
+                if not self.view.use_tty(): sys.stdout.write('this earlier form is not projected\n'); sys.stdout.flush()
                 return
             if self.view.use_tty(): self.view.paint()
             else: sys.stdout.write(text); sys.stdout.flush()
