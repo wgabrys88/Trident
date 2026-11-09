@@ -287,7 +287,7 @@ def locate(path, description, left, top, width, height):
     box = answers['target']['box']
     return dict(x=round(left + (box['left'] + box['right']) / 2 * width), y=round(top + (box['top'] + box['bottom']) / 2 * height), present=answers['present']['noul'], confidence=answers['target']['confidence'])
 def journal(path, text):
-    with open(path, 'a', encoding='utf-8') as handle: handle.write(text)
+    with open(path, 'a', encoding='utf-8', newline='') as handle: handle.write(text)
 def console_vt():
     handle = GetStdHandle(wintypes.DWORD(0xFFFFFFF5))
     mode = wintypes.DWORD()
@@ -505,6 +505,7 @@ class Journal:
             line, self._raw = self._raw.split('\n', 1)
             self._consume(line)
     def _consume(self, line):
+        if line.endswith('\r'): line = line[:-1]
         if self.legacy: return
         if self._body is not None:
             if line.startswith('|'): self._body.append(line[1:]); return
