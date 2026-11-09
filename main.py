@@ -425,6 +425,11 @@ class Journal:
             if tail_rows > 0: lines.extend(wrap_text(body, width)[-tail_rows:])
         return lines[:view]
     def sync_window(self):
+        if self.legacy and not self.messages:
+            rows, cols = self.dimensions()
+            self.shown = []
+            self.window = wrap_text('this earlier form is not projected', self.display_cols(cols))[:max(1, rows - 1)]
+            return self.window
         rows, cols = self.dimensions()
         limit = max(1, rows - 1)
         blocks = []
@@ -917,7 +922,8 @@ class Feed:
             self.view.ingest(text)
             if self.view.legacy:
                 self._legacy(path)
-                if not self.view.use_tty(): sys.stdout.write('this earlier form is not projected\n'); sys.stdout.flush()
+                if self.view.use_tty(): self.view.paint()
+                else: sys.stdout.write('this earlier form is not projected\n'); sys.stdout.flush()
                 return
             if self.view.use_tty(): self.view.paint()
             else: sys.stdout.write(text); sys.stdout.flush()
