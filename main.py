@@ -334,11 +334,6 @@ def tool_text(event):
         if event.get(key) is not None:
             lines.append(label + ':'); lines.append(indent_value(event[key]))
     return '\n'.join(lines)
-def prompt_usage(message):
-    usage = (message.get('result') or {}).get('usage') if isinstance(message, dict) else None
-    if not isinstance(usage, dict): return None
-    if not all(isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool) for key in ('inputTokens', 'outputTokens', 'totalTokens')): return None
-    return ','.join(f'{label}={usage[key]}' for key, label in (('inputTokens', 'in'), ('outputTokens', 'out'), ('totalTokens', 'total'), ('thoughtTokens', 'thought'), ('cachedReadTokens', 'cache_read'), ('cachedWriteTokens', 'cache_write')) if isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool))
 def worker_notice(outer, update):
     child = update['subagentSessionId'] if 'subagentSessionId' in update else None
     lines = ['source: ' + str(outer)]
@@ -349,7 +344,7 @@ def worker_notice(outer, update):
 class Journal:
     def __init__(self, path=None, writing=True):
         self.path, self.writing = path, writing
-        self.messages, self.index, self.open, self.usage = [], {}, {}, {}
+        self.messages, self.index, self.open = [], {}, {}
         self.focus, self.next_seq, self.drawn = None, 1, 0
         self._size = None
         self._vt = None
@@ -362,11 +357,7 @@ class Journal:
         if self._vt is None: self._vt = bool(sys.stdout.isatty() and console_vt())
         return self._vt
     def header(self, msg):
-        info = {} if msg['role'] == 'run' else self.usage.get(msg['session'], {})
-        request, context, cost = msg.get('request', 'unknown'), info.get('context', 'unknown'), info.get('cost')
-        line = f"## {msg['seq']} {msg['role']} {msg['channel']} {msg['session']} request={request} context={context}"
-        if cost: line += f" cost={cost}"
-        return line
+        return f"## {msg['seq']} {msg['role']} {msg['channel']} {msg['session']} request={msg.get('request', 'unknown')} context=unknown"
     def sync_window(self, size=None):
         rows, cols = size or self.dimensions()
         limit, width = max(1, rows - 1), max(1, cols - 1)
@@ -430,20 +421,6 @@ class Journal:
     def close(self, session, channels=('text', 'thought')):
         session = str(session)
         for channel in channels: self.open.pop((session, channel), None)
-    def set_usage(self, session, context=None, cost=None, cost_op='keep', replay=False):
-        session = str(session)
-        info = self.usage.setdefault(session, {'context': 'unknown', 'cost': None})
-        if context is not None: info['context'] = context
-        if cost_op == 'set': info['cost'] = cost
-        elif cost_op == 'clear': info['cost'] = None
-        if not replay:
-            line = f"@@ {session} context={info['context']}"
-            if cost_op == 'clear': line += ' cost='
-            elif info.get('cost'): line += f" cost={info['cost']}"
-            self.write(line + '\n')
-        self.dirty.update(msg['seq'] for msg in self.messages if msg['session'] == session and msg['role'] != 'run')
-        if replay: self.sync_window()
-        else: self.paint()
     def event(self, seq):
         msg = self.index[seq]
         color = {'observer': PALETTE[0], 'actor': PALETTE[1], 'worker': PALETTE[2], 'run': PALETTE[3]}.get(msg['role'], PALETTE[4])
@@ -466,7 +443,6 @@ class Journal:
             else:
                 self.index[meta]['body'] += body
                 self.touch(meta)
-        if line.startswith('@@ '): self._apply_usage(line); return
         if line.startswith('## '):
             if not self.index and (' request=' not in line or ' context=' not in line):
                 self.legacy = True
@@ -478,14 +454,6 @@ class Journal:
         elif line.startswith('.. '): self._meta = int(line[3:].strip())
         else: return
         self._body = []
-    def _apply_usage(self, line):
-        session, rest = line[3:].split(' ', 1)
-        context = rest[len('context='):] if rest.startswith('context=') else 'unknown'
-        cost, op = None, 'keep'
-        if ' cost=' in context:
-            context, cost = context.rsplit(' cost=', 1)
-            op = 'clear' if cost == '' else 'set'
-        self.set_usage(session, context, cost, op, replay=True)
 def choose_mind(goal, model):
     if model:
         if model not in MINDS: raise SystemExit('unknown mind: ' + model)
@@ -581,7 +549,7 @@ class ACP:
         message = json.loads(raw)
         if 'method' in message: self.notice(message); return
         method, started, done = self.pending.pop(message['id'])
-        if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=message['id'], seconds=round(time.monotonic() - started, 3), response=message), prompt_usage(message) or 'unknown')
+        if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=message['id'], seconds=round(time.monotonic() - started, 3), response=message))
         if 'error' in message: raise RuntimeError(json.dumps(message['error'], ensure_ascii=False))
         done(message['result'])
     def notice(self, message):
@@ -608,13 +576,6 @@ class ACP:
             if child is not None: self.roles[child] = 'worker'
             self.mission.stream.say('worker', channel, head, body)
             if kind == 'subagent_state_update' and child is not None and update.get('state') in ('completed', 'failed', 'cancelled', 'disconnected'): self.mission.stream.close(child)
-            return
-        if kind == 'usage_update':
-            used, size, cost = update.get('used'), update.get('size'), update.get('cost', None)
-            context = f'{used}/{size} tokens' if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (used, size)) else None
-            if 'cost' in update and cost is None: self.mission.stream.set_usage(session, context=context, cost=None, cost_op='clear')
-            elif isinstance(cost, dict) and 'amount' in cost and 'currency' in cost: self.mission.stream.set_usage(session, context=context, cost=f"{cost['amount']} {cost['currency']}", cost_op='set')
-            else: self.mission.stream.set_usage(session, context=context)
             return
         role = self.roles.get(session, 'run')
         if kind in ('agent_message_chunk', 'agent_thought_chunk'):
