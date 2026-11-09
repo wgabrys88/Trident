@@ -351,14 +351,9 @@ def tool_text(event):
         if event.get(key) is not None: lines.append(label + ': ' + str(event[key]))
     for place in event.get('locations') or []:
         lines.append('location:'); lines.append(indent_value(place))
-    if event.get('rawInput') is not None:
-        lines.append('input:'); lines.append(indent_value(event['rawInput']))
-    if event.get('rawOutput') is not None:
-        lines.append('rawOutput:'); lines.append(indent_value(event['rawOutput']))
-    if event.get('content') is not None:
-        lines.append('content:'); lines.append(indent_value(event['content']))
-    if event.get('error') is not None:
-        lines.append('error:'); lines.append(indent_value(event['error']))
+    for key, label in (('rawInput', 'input'), ('rawOutput', 'rawOutput'), ('content', 'content'), ('error', 'error')):
+        if event.get(key) is not None:
+            lines.append(label + ':'); lines.append(indent_value(event[key]))
     return '\n'.join(lines)
 def prompt_usage(message):
     usage = (message.get('result') or {}).get('usage') if isinstance(message, dict) else None
