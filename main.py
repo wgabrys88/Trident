@@ -383,6 +383,7 @@ class Journal:
         self.path, self.writing = path, writing
         self.messages, self.index, self.open, self.usage = [], {}, {}, {}
         self.shown, self.focus, self.next_seq, self.drawn = [], None, 1, 0
+        self._size = None
         self.fixed_rows = self.fixed_cols = None
         self.tty, self._vt, self.sink = None, None, None
         self.dirty, self._raw, self._body = set(), '', None
@@ -453,13 +454,13 @@ class Journal:
                 lines, tail_rows = lines[:max(0, view - 1)], 1
             if tail_rows > 0: lines.extend(wrap_text(body, width)[-tail_rows:])
         return lines[:view]
-    def sync_window(self):
+    def sync_window(self, size=None):
         if self.legacy and not self.messages:
-            rows, cols = self.dimensions()
+            rows, cols = size or self.dimensions()
             self.shown = []
             self.window = wrap_text('this earlier form is not projected', self.display_cols(cols))[:max(1, rows - 1)]
             return self.window
-        rows, cols = self.dimensions()
+        rows, cols = size or self.dimensions()
         limit = max(1, rows - 1)
         blocks = []
         for seq in list(self.shown):
@@ -484,10 +485,16 @@ class Journal:
         else: sys.stdout.write(text); sys.stdout.flush()
     def paint(self):
         if not self.use_tty(): return
-        lines = self.sync_window()
-        limit = max(1, self.dimensions()[0] - 1)
-        up = min(self.drawn, limit) if self.drawn else 0
-        text = '\x1b[?7l' + (f'\x1b[{up}A\x1b[J' if up else '') + ('\n'.join(lines) + '\n' if lines else '') + '\x1b[?7h'
+        rows, cols = self.dimensions()
+        lines = self.sync_window((rows, cols))
+        limit = max(1, rows - 1)
+        if self._size is not None and self._size != (rows, cols):
+            prefix = '\x1b[H\x1b[J'
+        else:
+            up = min(self.drawn, limit) if self.drawn else 0
+            prefix = f'\x1b[{up}A\x1b[J' if up else ''
+        text = '\x1b[?7l' + prefix + ('\n'.join(lines) + '\n' if lines else '') + '\x1b[?7h'
+        self._size = (rows, cols)
         self.drawn = len(lines)
         self._out(text)
     def insert(self, seq, role, channel, session, body, request, hold):
@@ -927,11 +934,12 @@ class Feed:
         else: self.events.append(shown)
         for box in self.boxes: box.put(dict(shown))
     def _switch(self, path):
-        drawn = self.view.drawn
+        drawn, size = self.view.drawn, self.view._size
         self.gen += 1
         self.current, self.offset, self.events = path, 0, []
         self.view, self.decoder = Journal(writing=False), codecs.getincrementaldecoder('utf-8')()
         self.view.drawn = drawn
+        self.view._size = size
         self.legacy_noted = False
         reset = dict(gen=self.gen, reset=True, run=path.name)
         for box in self.boxes: box.put(dict(reset))
