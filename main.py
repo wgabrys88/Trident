@@ -297,6 +297,19 @@ def wrap_text(text, cols):
     cols = max(1, int(cols))
     lines = []
     for raw in text.split('\n'):
+        shown, column = [], 0
+        for char in raw:
+            code = ord(char)
+            if char == '\t':
+                spaces = 8 - (column % 8)
+                shown.append(' ' * spaces)
+                column += spaces
+            elif code < 32 or code == 127 or 128 <= code <= 159:
+                continue
+            else:
+                shown.append(char)
+                column += 1
+        raw = ''.join(shown)
         if raw == '': lines.append('')
         else: lines.extend(raw[i:i + cols] for i in range(0, len(raw), cols))
     return lines
