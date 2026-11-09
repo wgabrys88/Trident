@@ -898,9 +898,11 @@ class Feed:
         else: self.events.append(shown)
         for box in self.boxes: box.put(dict(shown))
     def _switch(self, path):
+        drawn = self.view.drawn
         self.gen += 1
         self.current, self.offset, self.events = path, 0, []
         self.view, self.decoder = Journal(writing=False), codecs.getincrementaldecoder('utf-8')()
+        self.view.drawn = drawn
         self.legacy_noted = False
         reset = dict(gen=self.gen, reset=True, run=path.name)
         for box in self.boxes: box.put(dict(reset))
