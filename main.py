@@ -741,21 +741,17 @@ class ACP:
     def update(self, params):
         update, session = params['update'], params['sessionId']
         kind = update['sessionUpdate']
-        if kind == 'subagent_spawned':
+        if kind in ('subagent_spawned', 'subagent_state_update'):
             child, body = worker_notice(session, update)
-            self.mission.state['workers'].append(update)
-            if child is not None:
-                self.roles[child], self.text[child], self.thought[child] = 'worker', '', ''
-                self.mission.stream.say('worker', 'spawn', child, body)
-            else: self.mission.stream.say('worker', 'spawn', session, body)
-            return
-        if kind == 'subagent_state_update':
-            child, body = worker_notice(session, update)
-            if child is not None:
+            head = child if child is not None else session
+            channel = 'spawn' if kind == 'subagent_spawned' else 'state'
+            if kind == 'subagent_spawned':
+                self.mission.state['workers'].append(update)
+                if child is not None: self.roles[child], self.text[child], self.thought[child] = 'worker', '', ''
+            elif child is not None:
                 self.roles[child] = 'worker'
-                self.mission.stream.say('worker', 'state', child, body)
-                if update.get('state') in ('completed', 'failed', 'cancelled', 'disconnected'): self.mission.stream.close(child)
-            else: self.mission.stream.say('worker', 'state', session, body)
+            self.mission.stream.say('worker', channel, head, body)
+            if kind == 'subagent_state_update' and child is not None and update.get('state') in ('completed', 'failed', 'cancelled', 'disconnected'): self.mission.stream.close(child)
             return
         if kind == 'usage_update':
             used, size, cost = update.get('used'), update.get('size'), update.get('cost', None)
