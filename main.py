@@ -348,7 +348,8 @@ class Journal:
         self.focus, self.next_seq, self.drawn = None, 1, 0
         self._size = None
         self._vt = None
-        self.dirty, self._raw, self._body = set(), '', None
+        self.dirty, self._raw, self._reading = set(), '', None
+        self.tail, self._line, self._newline = None, True, False
         self.legacy = False
     def dimensions(self):
         size = shutil.get_terminal_size(fallback=(80, 24))
@@ -404,45 +405,59 @@ class Journal:
         if hold: self.open[(str(session), channel)] = seq
         self.touch(seq)
         return msg
-    def say(self, role, channel, session, body, request='unknown', hold=False):
-        msg = self.insert(self.next_seq, role, channel, session, body, request, hold)
+    def seal(self):
+        if self.tail is not None:
+            self.write('\n\n')
+            self.tail = None
+    def say(self, role, channel, session, body, request='unknown'):
+        msg = self.insert(self.next_seq, role, channel, session, body, request, False)
+        self.seal()
         self.write(self.header(msg) + '\n' + pipe_body(msg['body']) + '\n'); self.paint(); return msg
     def chunk(self, role, channel, session, text):
         if not text: return
         session = str(session)
         seq = self.open.get((session, channel))
-        if seq is None:
-            self.say(role, channel, session, text, hold=True)
+        if seq is None: msg = self.insert(self.next_seq, role, channel, session, text, 'unknown', True)
         else:
-            self.index[seq]['body'] += text
-            self.write(f'.. {seq}\n' + pipe_body(text) + '\n')
+            msg = self.index[seq]
+            msg['body'] += text
             self.touch(seq)
-            self.paint()
-    def close(self, session, channels=('text', 'thought')):
-        session = str(session)
-        for channel in channels: self.open.pop((session, channel), None)
+        prefix = ''
+        if self.tail != msg['seq']:
+            self.seal()
+            prefix = (self.header(msg) if seq is None else f'.. {seq}') + '\n|'
+            self.tail = msg['seq']
+        self.write(prefix + text.replace('\n', '\n|'))
+        self.paint()
+    def close(self, session=None, channels=('text', 'thought')):
+        for key in [key for key in self.open if session is None or key in [(str(session), channel) for channel in channels]]:
+            if self.open.pop(key) == self.tail: self.seal()
     def event(self, seq):
         msg = self.index[seq]
         color = {'observer': PALETTE[0], 'actor': PALETTE[1], 'worker': PALETTE[2], 'run': PALETTE[3]}.get(msg['role'], PALETTE[4])
         return dict(seq=seq, role=msg['role'], color=color, text=self.header(msg) + '\n' + msg['body'])
     def ingest(self, text):
         self._raw += text
-        while '\n' in self._raw:
-            line, self._raw = self._raw.split('\n', 1)
-            self._consume(line)
+        while self._raw and not self.legacy:
+            if self._line:
+                if self._reading is not None and self._raw.startswith('|'):
+                    self._raw, self._line = self._raw[1:], False
+                    if self._newline:
+                        self.index[self._reading]['body'] += '\n'
+                        self.touch(self._reading)
+                    self._newline = False
+                else:
+                    if '\n' not in self._raw: break
+                    line, self._raw = self._raw.split('\n', 1)
+                    self._consume(line)
+            else:
+                body, separator, self._raw = self._raw.partition('\n')
+                self.index[self._reading]['body'] += body
+                self.touch(self._reading)
+                if separator: self._line, self._newline = True, True
     def _consume(self, line):
         if line.endswith('\r'): line = line[:-1]
-        if self.legacy: return
-        if self._body is not None:
-            if line.startswith('|'): self._body.append(line[1:]); return
-            body, meta = '\n'.join(self._body), self._meta
-            self._body = None
-            if isinstance(meta, tuple):
-                seq, role, channel, session, request = meta
-                self.insert(seq, role, channel, session, body, request, channel in ('text', 'thought'))
-            else:
-                self.index[meta]['body'] += body
-                self.touch(meta)
+        self._reading, self._newline = None, False
         if line.startswith('## '):
             if not self.index and (' request=' not in line or ' context=' not in line):
                 self.legacy = True
@@ -450,10 +465,9 @@ class Journal:
             left, context = line.rsplit(' context=', 1)
             left, request = left.rsplit(' request=', 1)
             seq, role, channel, session = left[3:].split(' ', 3)
-            self._meta = (int(seq), role, channel, session, request)
-        elif line.startswith('.. '): self._meta = int(line[3:].strip())
-        else: return
-        self._body = []
+            self._reading = int(seq)
+            self.insert(int(seq), role, channel, session, '', request, False)
+        elif line.startswith('.. '): self._reading = int(line[3:].strip())
 def choose_mind(goal, model):
     if model:
         if model not in MINDS: raise SystemExit('unknown mind: ' + model)
@@ -692,7 +706,7 @@ def run_goal(work, goal, model, run):
             state['failures'].append(dict(time=utc(), error=f'{type(error).__name__}: {error}'))
             raise
         finally:
-            for session, channel in list(mission.stream.open): mission.stream.close(session, (channel,))
+            mission.stream.close()
             body_after = hashlib.sha256(BODY.read_bytes()).hexdigest()
             elapsed = round(time.time() - datetime.fromisoformat(started).timestamp(), 1)
             mission.record('final', dict(status=state['status'], elapsed_seconds=elapsed, failures=state['failures'], workers=len(state['workers']), sessions=state['sessions'], finish=state['finish'], body_changed=body_after != body_before))
