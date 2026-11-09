@@ -445,15 +445,13 @@ class Journal:
         return self._sequence_head(msg['seq'], width, rows)
     def fitted(self, msg, cols, limit):
         view, width = max(1, int(limit)), self.display_cols(cols)
-        body, reserve = msg['body'], msg['body'] != '' and max(1, int(limit)) >= 2
+        body, reserve = msg['body'], msg['body'] != '' and view >= 2
         head_rows = view - 1 if reserve else view
         session_forms = int(cols) >= 2 and not (body != '' and view < 2)
         lines = wrap_text(self._identity(msg, width, head_rows, session_forms), width)[:head_rows]
         if reserve:
             tail_rows = view - len(lines)
-            if tail_rows < 1:
-                lines, tail_rows = lines[:max(0, view - 1)], 1
-            if tail_rows > 0: lines.extend(wrap_text(body, width)[-tail_rows:])
+            lines.extend(wrap_text(body, width)[-tail_rows:])
         return lines[:view]
     def sync_window(self, size=None):
         if self.legacy and not self.messages:
