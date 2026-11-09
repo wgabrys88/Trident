@@ -47,6 +47,9 @@ CreateMutexW = signature(kernel32, 'CreateMutexW', wintypes.HANDLE, wintypes.LPV
 WaitForSingleObject = signature(kernel32, 'WaitForSingleObject', wintypes.DWORD, wintypes.HANDLE, wintypes.DWORD)
 ReleaseMutex = signature(kernel32, 'ReleaseMutex', wintypes.BOOL, wintypes.HANDLE)
 NtResumeProcess = signature(ntdll, 'NtResumeProcess', ctypes.c_long, wintypes.HANDLE)
+GetStdHandle = signature(kernel32, 'GetStdHandle', wintypes.HANDLE, wintypes.DWORD)
+GetConsoleMode = signature(kernel32, 'GetConsoleMode', wintypes.BOOL, wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+SetConsoleMode = signature(kernel32, 'SetConsoleMode', wintypes.BOOL, wintypes.HANDLE, wintypes.DWORD)
 user32.SetProcessDPIAware()
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [('dx', wintypes.LONG), ('dy', wintypes.LONG), ('mouseData', wintypes.DWORD), ('dwFlags', wintypes.DWORD), ('time', wintypes.DWORD), ('dwExtraInfo', ctypes.c_size_t)]
@@ -285,7 +288,271 @@ def locate(path, description, left, top, width, height):
     return dict(x=round(left + (box['left'] + box['right']) / 2 * width), y=round(top + (box['top'] + box['bottom']) / 2 * height), present=answers['present']['noul'], confidence=answers['target']['confidence'])
 def journal(path, text):
     with open(path, 'a', encoding='utf-8') as handle: handle.write(text)
-    sys.stdout.write(text); sys.stdout.flush()
+def console_vt():
+    handle = GetStdHandle(wintypes.DWORD(0xFFFFFFF5))
+    mode = wintypes.DWORD()
+    if not handle or not GetConsoleMode(handle, ctypes.byref(mode)): return False
+    return bool(SetConsoleMode(handle, mode.value | 0x0004))
+def wrap_text(text, cols):
+    cols = max(1, int(cols))
+    lines = []
+    for raw in text.split('\n'):
+        if raw == '': lines.append('')
+        else: lines.extend(raw[i:i + cols] for i in range(0, len(raw), cols))
+    return lines
+def pipe_body(text):
+    return ''.join('|' + line + '\n' for line in text.split('\n'))
+def unpipe(lines):
+    return '\n'.join(lines)
+def indent_value(value, indent=1):
+    pad = '  ' * indent
+    if isinstance(value, str): return '\n'.join(pad + line if line else pad for line in value.splitlines()) or pad
+    if isinstance(value, dict):
+        rows = []
+        for key, item in value.items():
+            if isinstance(item, (dict, list)): rows.append(f'{pad}{key}:'); rows.append(indent_value(item, indent + 1))
+            else: rows.append(f'{pad}{key}: {item}')
+        return '\n'.join(rows)
+    if isinstance(value, list): return '\n'.join(indent_value(item, indent) for item in value)
+    return f'{pad}{value}'
+def tool_text(event):
+    lines = []
+    for key, label in (('toolCallId', 'id'), ('kind', 'kind'), ('title', 'title'), ('status', 'status'), ('time', 'time')):
+        if event.get(key) is not None: lines.append(label + ': ' + str(event[key]))
+    for place in event.get('locations') or []:
+        lines.append('location:'); lines.append(indent_value(place))
+    if event.get('rawInput') is not None:
+        lines.append('input:'); lines.append(indent_value(event['rawInput']))
+    if event.get('rawOutput') is not None:
+        lines.append('rawOutput:'); lines.append(indent_value(event['rawOutput']))
+    if event.get('content') is not None:
+        lines.append('content:'); lines.append(indent_value(event['content']))
+    if event.get('error') is not None:
+        lines.append('error:'); lines.append(indent_value(event['error']))
+    return '\n'.join(lines)
+def prompt_usage(message):
+    usage = (message.get('result') or {}).get('usage') if isinstance(message, dict) else None
+    if not isinstance(usage, dict): return None
+    if not all(isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool) for key in ('inputTokens', 'outputTokens', 'totalTokens')): return None
+    text = f"in={usage['inputTokens']},out={usage['outputTokens']},total={usage['totalTokens']}"
+    for key, label in (('thoughtTokens', 'thought'), ('cachedReadTokens', 'cache_read'), ('cachedWriteTokens', 'cache_write')):
+        if isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool): text += f',{label}={usage[key]}'
+    return text
+def worker_notice(outer, update):
+    child = update['subagentSessionId'] if 'subagentSessionId' in update else None
+    lines = ['source: ' + str(outer)]
+    if child is not None: lines.append('target: ' + str(child))
+    for key in ('name', 'task', 'state'):
+        if update.get(key) is not None: lines.append(key + ': ' + str(update[key]))
+    return child, '\n'.join(lines)
+def memory_attachment(acknowledged, exists, mtime):
+    if not exists: return None
+    if acknowledged is None or mtime > acknowledged: return mtime
+    return None
+class Journal:
+    def __init__(self, path=None, writing=True):
+        self.path, self.writing = path, writing
+        self.messages, self.index, self.open, self.usage = [], {}, {}, {}
+        self.shown, self.focus, self.next_seq, self.drawn = [], None, 1, 0
+        self.fixed_rows = self.fixed_cols = None
+        self.tty, self._vt, self.sink = None, None, None
+        self.dirty, self._raw, self._body = set(), '', None
+        self.legacy, self._grammar = False, None
+    def dimensions(self):
+        if self.fixed_rows and self.fixed_cols: return self.fixed_rows, self.fixed_cols
+        size = shutil.get_terminal_size(fallback=(80, 24))
+        return size.lines, size.columns
+    def use_tty(self):
+        if self.tty is False: return False
+        if self.tty is True: return True
+        if self._vt is None: self._vt = bool(sys.stdout.isatty() and console_vt())
+        return self._vt
+    def header(self, msg):
+        request = msg.get('request', 'unknown')
+        if msg['role'] == 'run': context, cost = 'unknown', None
+        else:
+            info = self.usage.get(msg['session'], {})
+            context, cost = info.get('context', 'unknown'), info.get('cost')
+        line = f"## {msg['seq']} {msg['role']} {msg['channel']} {msg['session']} request={request} context={context}"
+        if cost: line += f" cost={cost}"
+        return line
+    def display_cols(self, cols):
+        cols = int(cols)
+        if cols >= 2: return cols - 1
+        return max(1, cols)
+    def _fits(self, text, width, rows):
+        return rows >= 1 and len(wrap_text(text, width)) <= rows
+    def _marked_suffix(self, msg, width, rows):
+        session, prefix = str(msg['session']), f"## {msg['seq']} ..."
+        if not self._fits(prefix, width, rows): return None
+        best, low, high = 0, 1, len(session)
+        while low <= high:
+            mid = (low + high) // 2
+            if self._fits(prefix + session[-mid:], width, rows): best, low = mid, mid + 1
+            else: high = mid - 1
+        if best < 1: return None
+        suffix = session[-best:]
+        for other in {item['session'] for item in self.messages}:
+            if other != session and other.endswith(suffix): return None
+        return prefix + suffix
+    def _sequence_head(self, seq, width, rows):
+        plain = f"## {seq}"
+        if self._fits(plain, width, rows): return plain
+        budget = max(0, rows) * width
+        if budget >= 3: return plain[:budget - 3] + '...'
+        return '...'[:budget]
+    def _identity(self, msg, width, rows, session_forms):
+        if session_forms:
+            if self._fits(self.header(msg), width, rows): return self.header(msg)
+            session, seq, role, channel = str(msg['session']), msg['seq'], msg['role'], msg['channel']
+            for form in (f"## {seq} {role} {channel} {session}", f"## {seq} {role} {session}", f"## {seq} {session}"):
+                if self._fits(form, width, rows): return form
+            marked = self._marked_suffix(msg, width, rows)
+            if marked is not None: return marked
+            clipped = f"## {seq} clipped"
+            if self._fits(clipped, width, rows): return clipped
+        return self._sequence_head(msg['seq'], width, rows)
+    def fitted(self, msg, cols, limit):
+        view, width = max(1, int(limit)), self.display_cols(cols)
+        body, reserve = msg['body'], msg['body'] != '' and max(1, int(limit)) >= 2
+        head_rows = view - 1 if reserve else view
+        session_forms = int(cols) >= 2 and not (body != '' and view < 2)
+        lines = wrap_text(self._identity(msg, width, head_rows, session_forms), width)[:head_rows]
+        if reserve:
+            tail_rows = view - len(lines)
+            if tail_rows < 1:
+                lines, tail_rows = lines[:max(0, view - 1)], 1
+            if tail_rows > 0: lines.extend(wrap_text(body, width)[-tail_rows:])
+        return lines[:view]
+    def sync_window(self):
+        rows, cols = self.dimensions()
+        limit = max(1, rows - 1)
+        blocks = []
+        for seq in list(self.shown):
+            msg = self.index.get(seq)
+            if msg is not None: blocks.append((seq, self.fitted(msg, cols, limit)))
+        while len(blocks) > 1 and sum(len(lines) for _, lines in blocks) > limit: blocks.pop(0)
+        if self.focus is not None and self.focus in self.index and all(seq != self.focus for seq, _ in blocks):
+            blocks = [(self.focus, self.fitted(self.index[self.focus], cols, limit))]
+        self.shown = [seq for seq, _ in blocks]
+        self.window = [line for _, lines in blocks for line in lines]
+        return self.window
+    def touch(self, seq):
+        if seq not in self.shown: self.shown.append(seq)
+        self.focus = seq
+        self.dirty.add(seq)
+        self.sync_window()
+    def write(self, record):
+        if self.path is not None and self.writing: journal(self.path, record)
+        if self.writing and not self.use_tty(): self._out(record)
+    def _out(self, text):
+        if self.sink is not None: self.sink.append(text)
+        else: sys.stdout.write(text); sys.stdout.flush()
+    def paint(self):
+        if not self.use_tty(): return
+        lines = self.sync_window()
+        limit = max(1, self.dimensions()[0] - 1)
+        up = min(self.drawn, limit) if self.drawn else 0
+        text = (f'\x1b[{up}A\x1b[J' if up else '') + ('\n'.join(lines) + '\n' if lines else '')
+        self.drawn = len(lines)
+        self._out(text)
+    def insert(self, seq, role, channel, session, body, request, hold):
+        msg = dict(seq=seq, role=role, channel=channel, session=str(session), body=body, request=request)
+        self.messages.append(msg); self.index[seq] = msg
+        self.next_seq = max(self.next_seq, seq + 1)
+        if hold: self.open[(str(session), channel)] = seq
+        self.touch(seq)
+        return msg
+    def opening_record(self, msg):
+        return self.header(msg) + '\n' + pipe_body(msg['body']) + '\n'
+    def say(self, role, channel, session, body, request='unknown'):
+        msg = self.insert(self.next_seq, role, channel, session, body, request, False)
+        self.write(self.opening_record(msg)); self.paint(); return msg
+    def chunk(self, role, channel, session, text):
+        if not text: return
+        session = str(session)
+        seq = self.open.get((session, channel))
+        if seq is None:
+            msg = self.insert(self.next_seq, role, channel, session, text, 'unknown', True)
+            self.write(self.opening_record(msg))
+        else:
+            self.index[seq]['body'] += text
+            self.write(f'.. {seq}\n' + pipe_body(text) + '\n')
+            self.touch(seq)
+        self.paint()
+    def close(self, session, channels=('text', 'thought')):
+        session = str(session)
+        for channel in channels: self.open.pop((session, channel), None)
+    def set_usage(self, session, context=None, cost=None, cost_op='keep'):
+        info = self.usage.setdefault(str(session), {'context': 'unknown', 'cost': None})
+        if context is not None: info['context'] = context
+        if cost_op == 'set': info['cost'] = cost
+        elif cost_op == 'clear': info['cost'] = None
+        line = f"@@ {session} context={info['context']}"
+        if cost_op == 'clear': line += ' cost='
+        elif info.get('cost'): line += f" cost={info['cost']}"
+        self.write(line + '\n')
+        for msg in self.messages:
+            if msg['session'] == str(session) and msg['role'] != 'run': self.dirty.add(msg['seq'])
+        self.paint()
+    def event(self, seq):
+        msg = self.index[seq]
+        color = {'observer': PALETTE[0], 'actor': PALETTE[1], 'worker': PALETTE[2], 'run': PALETTE[3]}.get(msg['role'], PALETTE[4])
+        return dict(seq=seq, role=msg['role'], color=color, text=self.header(msg) + '\n' + msg['body'])
+    def ingest(self, text):
+        self._raw = getattr(self, '_raw', '') + text
+        while '\n' in self._raw:
+            line, self._raw = self._raw.split('\n', 1)
+            self._consume(line)
+    def _consume(self, line):
+        if self.legacy: return
+        if self._body is not None:
+            if line.startswith('|'): self._body.append(line[1:]); return
+            self._flush_body()
+        if line == '' or line.startswith('@@ '):
+            if line.startswith('@@ '): self._apply_usage(line)
+            return
+        if line.startswith('## '):
+            if self._grammar is None:
+                if ' request=' not in line or ' context=' not in line:
+                    self.legacy = True
+                    return
+                self._grammar = True
+            self._begin(True, line); return
+        if line.startswith('.. '): self._begin(False, line)
+    def _begin(self, opening, line):
+        self._body, self._opening = [], opening
+        if opening:
+            left, context = line.rsplit(' context=', 1)
+            left, request = left.rsplit(' request=', 1)
+            seq, role, channel, session = left[3:].split(' ', 3)
+            self._meta = (int(seq), role, channel, session, request)
+        else:
+            self._meta = int(line[3:].strip())
+    def _flush_body(self):
+        body, opening, meta = unpipe(self._body), self._opening, self._meta
+        self._body = self._opening = self._meta = None
+        if opening:
+            seq, role, channel, session, request = meta
+            self.insert(seq, role, channel, session, body, request, channel in ('text', 'thought'))
+        else:
+            self.index[meta]['body'] += body
+            self.touch(meta)
+    def _apply_usage(self, line):
+        rest = line[3:]
+        session, rest = rest.split(' ', 1)
+        context = rest[len('context='):] if rest.startswith('context=') else 'unknown'
+        cost, op = None, 'keep'
+        if ' cost=' in context:
+            context, cost = context.rsplit(' cost=', 1)
+            op = 'clear' if cost == '' else 'set'
+        info = self.usage.setdefault(str(session), {'context': 'unknown', 'cost': None})
+        info['context'] = context
+        if op == 'set': info['cost'] = cost
+        elif op == 'clear': info['cost'] = None
+        for msg in self.messages:
+            if msg['session'] == str(session) and msg['role'] != 'run': self.dirty.add(msg['seq'])
+        self.sync_window()
 def choose_mind(goal, model):
     if model:
         if model not in MINDS: raise SystemExit('unknown mind: ' + model)
@@ -323,12 +590,13 @@ class Mission:
         self.journal, self.story, self.evidence = self.work / f'run_{self.run}.md', self.work / 'story.md', self.work / 'evidence' / self.run
         self.evidence.mkdir(parents=True)
         self.story.touch()
+        self.stream = Journal(self.journal)
         self.state = dict(goal=goal, model=model, run=self.run, started=started, status='observing', sessions={}, runtime={}, timing=None, criteria={}, checks={}, action=None, result=None, handover=None, screen=None, workers=[], failures=[], artifacts={})
         self.narrate('opening', f'Run {self.run} on {model} begins. Goal: {goal}')
         self.record('goal', goal)
-    def record(self, kind, value):
+    def record(self, kind, value, request='unknown'):
         body = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-        journal(self.journal, f"## {time.strftime('%H:%M:%S')} {kind}\n\n{body}\n\n")
+        self.stream.say('run', kind, self.run, body, request)
     def narrate(self, voice, text):
         with open(self.story, 'a', encoding='utf-8') as story: story.write(f"## {utc()} {self.run} {voice}\n\n{text.strip()}\n\n")
     def artifact(self, path):
@@ -367,7 +635,7 @@ class ACP:
     def __init__(self, mission, resources):
         self.mission, self.inbox, self.counter = mission, queue.Queue(), 0
         self.roles, self.text, self.thought, self.tools, self.turn, self.ready = {}, {}, {}, {}, [], set()
-        self.active = None
+        self.memory_ack, self.active = {}, None
         config, source = mission.work / 'agent/config', ROOT / 'agent/config'
         if source != config and (source / 'cli-config.json').exists() and not (config / 'cli-config.json').exists():
             shutil.copytree(source, config, ignore=shutil.ignore_patterns('acp-sessions', 'statsig-cache.json*'), dirs_exist_ok=True)
@@ -414,7 +682,7 @@ class ACP:
             message = json.loads(raw)
             if 'method' in message: self.notice(message); continue
             if message['id'] != identity: raise ValueError('unexpected ACP reply: ' + json.dumps(message, ensure_ascii=False))
-            if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=identity, seconds=round(time.monotonic() - started, 3), response=message))
+            if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=identity, seconds=round(time.monotonic() - started, 3), response=message), prompt_usage(message) or 'unknown')
             if 'error' in message: raise RuntimeError(json.dumps(message['error'], ensure_ascii=False))
             return message['result']
     def notice(self, message):
@@ -434,18 +702,45 @@ class ACP:
         else: self.mission.record(method, params)
     def update(self, params):
         update, session = params['update'], params['sessionId']
-        kind, role = update['sessionUpdate'], self.roles[session]
+        kind = update['sessionUpdate']
+        if kind == 'subagent_spawned':
+            child, body = worker_notice(session, update)
+            self.mission.state['workers'].append(update)
+            if child is not None:
+                self.roles[child], self.text[child], self.thought[child] = 'worker', '', ''
+                self.mission.stream.say('worker', 'spawn', child, body)
+            else: self.mission.stream.say('worker', 'spawn', session, body)
+            return
+        if kind == 'subagent_state_update':
+            child, body = worker_notice(session, update)
+            if child is not None:
+                self.roles[child] = 'worker'
+                self.mission.stream.say('worker', 'state', child, body)
+                if update.get('state') in ('completed', 'failed', 'cancelled', 'disconnected'): self.mission.stream.close(child)
+            else: self.mission.stream.say('worker', 'state', session, body)
+            return
+        if kind == 'usage_update':
+            used, size, cost = update.get('used'), update.get('size'), update.get('cost', None)
+            context = f'{used}/{size} tokens' if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in (used, size)) else None
+            if 'cost' not in update: self.mission.stream.set_usage(session, context=context)
+            elif cost is None: self.mission.stream.set_usage(session, context=context, cost=None, cost_op='clear')
+            elif isinstance(cost, dict) and 'amount' in cost and 'currency' in cost: self.mission.stream.set_usage(session, context=context, cost=f"{cost['amount']} {cost['currency']}", cost_op='set')
+            else: self.mission.stream.set_usage(session, context=context)
+            return
+        role = self.roles.get(session, 'run')
         if kind == 'agent_message_chunk':
-            if role == 'worker': self.mission.record('worker', update['content']['text'])
-            else: self.text[session] += update['content']['text']
+            text = (update.get('content') or {}).get('text') or ''
+            if role != 'worker': self.text[session] = self.text.get(session, '') + text
+            self.mission.stream.chunk(role, 'text', session, text)
         elif kind == 'agent_thought_chunk':
-            if role == 'worker': self.mission.record('worker-thought', update['content']['text'])
-            else: self.thought[session] += update['content']['text']
+            text = (update.get('content') or {}).get('text') or ''
+            if role != 'worker': self.thought[session] = self.thought.get(session, '') + text
+            self.mission.stream.chunk(role, 'thought', session, text)
         elif kind in ('tool_call', 'tool_call_update'):
             call = update['toolCallId']
             if kind == 'tool_call':
-                if self.thought.get(session): self.mission.record(role + '-thought', self.thought[session]); self.thought[session] = ''
-                if self.text.get(session): self.mission.record(role, self.text[session]); self.text[session] = ''
+                self.mission.stream.close(session)
+                self.thought[session], self.text[session] = '', ''
                 self.tools[call] = dict(role=role, session=session, **update)
             else: self.tools[call].update(update)
             event = self.tools[call]
@@ -454,12 +749,8 @@ class ACP:
                 del self.tools[call]
                 self.turn.append(dict(role=role, kind=event['kind'], title=event['title'], status=event['status'], locations=[place['path'] for place in event.get('locations', [])]))
                 if event['status'] == 'failed': self.mission.state['failures'].append(dict(time=event['time'], tool=event['title']))
-                self.mission.record('tool', event)
-        elif kind == 'subagent_spawned':
-            self.roles[update['subagentSessionId']] = 'worker'
-            self.mission.state['workers'].append(update)
-            self.mission.record('worker-spawned', update)
-        else: self.mission.record(kind, update)
+                self.mission.stream.say(role, 'tool', session, tool_text(event))
+        else: self.mission.stream.say(role, kind, session, json.dumps(update, ensure_ascii=False))
     def session(self, role):
         result = self.rpc('session/new', dict(cwd=str(self.mission.work), mcpServers=[]))
         session = result['sessionId']
@@ -480,16 +771,20 @@ class ACP:
             text = '\n'.join(((OBSERVER if role == 'observer' else ACTOR), CONTRACT, json.dumps(self.mission.initial(), ensure_ascii=False), text))
             self.ready.add(session)
         content = [dict(type='text', text=text)]
-        if fresh:
-            picture = self.mission.work / 'memory.png'
-            if picture.is_file(): content += [dict(type='text', text=str(picture)), dict(type='image', mimeType='image/png', data=base64.b64encode(picture.read_bytes()).decode())]
+        picture = self.mission.work / 'memory.png'
+        exists = picture.is_file()
+        attached = memory_attachment(self.memory_ack.get(session), exists, picture.stat().st_mtime if exists else None)
+        if attached is not None: content += [dict(type='text', text=str(picture)), dict(type='image', mimeType='image/png', data=base64.b64encode(picture.read_bytes()).decode())]
         if image: content += [dict(type='text', text=str(image)), dict(type='image', mimeType='image/png', data=base64.b64encode(Path(image).read_bytes()).decode())]
         self.mission.record('prompt', dict(time=utc(), role=role, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None, text=text))
-        result = self.rpc('session/prompt', dict(sessionId=session, prompt=content))
+        try: result = self.rpc('session/prompt', dict(sessionId=session, prompt=content))
+        except BaseException:
+            self.mission.stream.close(session)
+            raise
         self.active = None
-        if self.thought[session]: self.mission.record(role + '-thought', self.thought[session])
+        self.mission.stream.close(session)
+        if attached is not None: self.memory_ack[session] = attached
         if result['stopReason'] != 'end_turn': raise RuntimeError('Cursor stopped the turn: ' + result['stopReason'])
-        self.mission.record(role, self.text[session])
         return self.text[session]
     def cancel(self):
         if self.active:
@@ -553,8 +848,11 @@ def run_goal(work, goal, model, run):
             mission.record('final', dict(status=state['status'], elapsed_seconds=elapsed, passed=passed, criteria=len(state['criteria']), failures=state['failures'], workers=len(state['workers']), action=state['action'], handover=state['handover'], body_changed=body_after != body_before))
         return state['status']
 PAGE = ("<!doctype html><meta charset=utf-8><title>Trident</title><style>body{margin:0;background:#10141a}pre{white-space:pre-wrap;margin:0;padding:8px 14px;font:14px/1.4 Consolas,monospace}</style><div id=p></div>"
-        "<script>const p=document.getElementById('p'),s=new EventSource('/events');s.onopen=()=>p.replaceChildren();"
-        "s.onmessage=e=>{const m=JSON.parse(e.data),d=document.createElement('pre');d.style.color=m.color;d.textContent=m.text;p.appendChild(d);scrollTo(0,9e9)}</script>").encode('utf-8')
+        "<script>const p=document.getElementById('p'),s=new EventSource('/events'),els=new Map();let g=0;"
+        "s.onopen=()=>{p.replaceChildren();els.clear();g=0};"
+        "s.onmessage=e=>{const m=JSON.parse(e.data);if(m.gen<g)return;if(m.gen>g){p.replaceChildren();els.clear();g=m.gen}if(m.reset)return;"
+        "const k=m.legacy?'legacy':m.seq;let d=els.get(k);if(!d){d=document.createElement('pre');if(m.color)d.style.color=m.color;p.appendChild(d);els.set(k,d)}"
+        "d.textContent=m.text;scrollTo(0,9e9)}</script>").encode('utf-8')
 class Hub(BaseHTTPRequestHandler):
     feed = None
     def log_message(self, *_): return
@@ -572,33 +870,61 @@ class Hub(BaseHTTPRequestHandler):
             finally:
                 with feed.lock: feed.boxes.remove(box)
             return
-        with feed.lock: payload = ''.join(event['text'] for event in feed.events).encode('utf-8') if route == '/md' else PAGE
+        with feed.lock: payload = ''.join(event['text'] for event in feed.events if not event.get('legacy')).encode('utf-8') if route == '/md' else PAGE
         mime = 'text/markdown; charset=utf-8' if route == '/md' else 'text/html; charset=utf-8'
         self.send_response(200); self.send_header('Content-Type', mime); self.send_header('Content-Length', str(len(payload))); self.end_headers(); self.wfile.write(payload)
 class Feed:
     def __init__(self, root):
-        self.root, self.lock, self.boxes, self.events, self.colors = root, threading.Lock(), [], [], {}
-        self.cursors = {path: [path.stat().st_size, codecs.getincrementaldecoder('utf-8')()] for path in self.sources()}
+        self.root, self.lock, self.boxes, self.events = root, threading.Lock(), [], []
+        self.view, self.current, self.offset = Journal(writing=False), None, 0
+        self.decoder = codecs.getincrementaldecoder('utf-8')()
+        self.gen, self.legacy_noted = 0, False
         Hub.feed = self
-    def sources(self):
-        return sorted(self.root.glob('run_*.md')) + list(self.root.glob('story.md'))
+    def newest(self):
+        runs = sorted(self.root.glob('run_*.md'))
+        return runs[-1] if runs else None
+    def upsert(self, event):
+        shown = dict(event, gen=self.gen, run=self.current.name)
+        for index, old in enumerate(self.events):
+            if not old.get('legacy') and old.get('seq') == shown.get('seq'):
+                self.events[index] = shown
+                break
+        else: self.events.append(shown)
+        for box in self.boxes: box.put(dict(shown))
+    def _switch(self, path):
+        self.gen += 1
+        self.current, self.offset, self.events = path, 0, []
+        self.view, self.decoder = Journal(writing=False), codecs.getincrementaldecoder('utf-8')()
+        self.legacy_noted = False
+        reset = dict(gen=self.gen, reset=True, run=path.name)
+        for box in self.boxes: box.put(dict(reset))
+    def _legacy(self, path):
+        self.legacy_noted = True
+        notice = dict(legacy=True, gen=self.gen, run=path.name, text='this earlier form is not projected')
+        self.events.append(dict(notice))
+        for box in self.boxes: box.put(dict(notice))
     def follow(self):
-        for path in self.sources():
-            cursor = self.cursors.setdefault(path, [0, codecs.getincrementaldecoder('utf-8')()])
-            with path.open('rb') as handle:
-                handle.seek(cursor[0]); text = cursor[1].decode(handle.read()); cursor[0] = handle.tell()
-            if text: self.relay(path.stem, text)
-    def relay(self, source, text):
+        path = self.newest()
+        if path is None: return
         with self.lock:
-            color = self.colors.setdefault(source, PALETTE[len(self.colors) % len(PALETTE)])
-            chunk = f"## {time.strftime('%H:%M:%S')} {color} {source}\n\n{text.rstrip()}\n\n"
-            sys.stdout.write(chunk); sys.stdout.flush()
-            event = dict(color=color, text=chunk)
-            self.events.append(event)
-            for box in self.boxes: box.put(event)
+            if path != self.current: self._switch(path)
+            if self.legacy_noted: return
+            with path.open('rb') as handle:
+                handle.seek(self.offset); data = handle.read(); self.offset = handle.tell()
+            if not data: return
+            text = self.decoder.decode(data)
+            self.view.ingest(text)
+            if self.view.legacy:
+                self._legacy(path)
+                if not self.view.use_tty(): sys.stdout.write(text); sys.stdout.flush()
+                return
+            if self.view.use_tty(): self.view.paint()
+            else: sys.stdout.write(text); sys.stdout.flush()
+            for seq in sorted(self.view.dirty): self.upsert(self.view.event(seq))
+            self.view.dirty.clear()
     def serve(self):
         with FeedServer(('0.0.0.0', HUB_PORT), Hub) as server:
-            self.relay('hub', f'http://127.0.0.1:{HUB_PORT}/')
+            sys.stderr.write(f'http://127.0.0.1:{HUB_PORT}/\n')
             server.serve_forever(poll_interval=0.2)
 class FeedServer(ThreadingHTTPServer):
     def service_actions(self): Hub.feed.follow()
