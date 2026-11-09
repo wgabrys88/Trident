@@ -1,4 +1,4 @@
-import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, shutil, subprocess, sys, threading, time, urllib.error, urllib.request
+import argparse, base64, codecs, ctypes, hashlib, json, math, os, queue, shutil, subprocess, sys, threading, time, unicodedata, urllib.error, urllib.request
 from contextlib import ExitStack, contextmanager
 from ctypes import wintypes
 from datetime import datetime, timezone
@@ -297,21 +297,37 @@ def wrap_text(text, cols):
     cols = max(1, int(cols))
     lines = []
     for raw in text.split('\n'):
-        shown, column = [], 0
+        line, column, rows = '', 0, []
         for char in raw:
             code = ord(char)
             if char == '\t':
-                spaces = 8 - (column % 8)
-                shown.append(' ' * spaces)
+                spaces = min(8 - (column % 8), cols)
+                if line and column + spaces > cols:
+                    rows.append(line)
+                    line, column = '', 0
+                    spaces = min(8, cols)
+                line += ' ' * spaces
                 column += spaces
             elif code < 32 or code == 127 or 128 <= code <= 159:
                 continue
             else:
-                shown.append(char)
-                column += 1
-        raw = ''.join(shown)
-        if raw == '': lines.append('')
-        else: lines.extend(raw[i:i + cols] for i in range(0, len(raw), cols))
+                cat = unicodedata.category(char)
+                if unicodedata.combining(char) or cat in ('Mn', 'Me', 'Cf'): width = 0
+                elif unicodedata.east_asian_width(char) in ('W', 'F'): width = 2
+                else: width = 1
+                if width > cols:
+                    if line:
+                        rows.append(line)
+                        line, column = '', 0
+                    rows.append(char)
+                    continue
+                if line and column + width > cols:
+                    rows.append(line)
+                    line, column = '', 0
+                line += char
+                column += width
+        if line or not rows: rows.append(line)
+        lines.extend(rows)
     return lines
 def pipe_body(text):
     return ''.join('|' + line + '\n' for line in text.split('\n'))
@@ -471,7 +487,7 @@ class Journal:
         lines = self.sync_window()
         limit = max(1, self.dimensions()[0] - 1)
         up = min(self.drawn, limit) if self.drawn else 0
-        text = (f'\x1b[{up}A\x1b[J' if up else '') + ('\n'.join(lines) + '\n' if lines else '')
+        text = '\x1b[?7l' + (f'\x1b[{up}A\x1b[J' if up else '') + ('\n'.join(lines) + '\n' if lines else '') + '\x1b[?7h'
         self.drawn = len(lines)
         self._out(text)
     def insert(self, seq, role, channel, session, body, request, hold):
