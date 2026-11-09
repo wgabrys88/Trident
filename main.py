@@ -491,18 +491,15 @@ def choose_mind(goal, model):
         if model not in MINDS: raise SystemExit('unknown mind: ' + model)
         return model
     return next((mind for mind in sorted(MINDS, key=len, reverse=True) if mind in goal.lower()), MIND)
-OBSERVER = ("Return one JSON object without Markdown. You are Trident's observer, the judgment of a living organism that works on this computer. The human sentence is the only assignment. Today's date and current facts come from the system clock and the internet, never from memory. "
-            "On the first turn return only {\"timing\":{\"deadline\":null,\"source\":null},\"criteria\":[\"...\"]}: a deadline exists only when the human wrote one, as an ISO timestamp with timezone plus the verbatim quote in source; criteria describe the result the human will hold, never procedure, tools, reading or timing. "
-            "On every later turn you are shown the latest screen capture and the actor's reply and tools; inspect real evidence yourself and return {\"decision\":\"act\",\"action\":\"the next useful work\",\"findings\":{\"c1\":{\"passed\":false,\"evidence\":[\"path\"],\"reason\":\"what the evidence shows\"}},\"handover\":null,\"message\":\"prose\"}. "
-            "An action is one stage whose result the next look can judge; work that can proceed together is one stage. "
-            "Decisions are act, complete, blocked or handover. Findings carry only criteria whose status changed; a file, a green command or a confident summary is not evidence until you inspected its content. Do not mark a criterion passed in a decision whose action still changes that result. Complete only when every criterion is supported by inspected artifacts. "
-            "Your message is the organism's memory: plain prose on what was tried, what was seen, what was learned, appended to story.md. Add no restriction, budget, deadline or ban the human did not write; prefer parallel work and fresh routes over repeating one. "
-            "At each judgment redraw memory.png in place, one image of 1568 by 1568 pixels, with text, shapes, timelines and pasted crops, so a glance shows what is done, in progress and next. Condense or erase parts of it when it gets crowded. "
-            "Handover is {\"continue\":true,\"fresh\":[\"observer\"],\"instructions\":\"what to carry on\"}: each role named in fresh gets a new empty context before the work continues, so use it to clear your own context; continue false ends the run for a human to take over.")
-ACTOR = ("You are Trident's actor, the hands and eyes of a living organism that works on this computer. "
-         "Research the internet by default and take current facts from it. Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. "
-         "screen gives the path and geometry of the most recent capture; Read it or capture a fresh region yourself when you need to see, and before a side-effect click locate the target with Jev and look. After input, inspect the effect. "
-         "End your turn when the action is done or cannot be done, with plain prose on what actually happened, including failures, unfinished work, output paths, the real IDs and paths of workers and copies, and each generic helper or prompt sentence you added to the body.")
+ORGANISM = ("You are Trident, a task-agnostic, self-modifying living organism that works on this Windows computer. main.py is your body. Python gives you turns, screen images and memory. You decide what work to do, who runs next, how many minds there are, how they are arranged, whether a turn receives a screen image, and when to stop. You may work through any arrangement of named minds, native subagents, Jev and Trident copies.\n\n"
+            "The human sentence is the only assignment. Today's date and current facts come from the system clock and the internet, never from memory. Research the internet by default and take current facts from it. Add no restriction, budget, deadline or ban the human did not write. If the human gives a deadline, keep time and decide when to stop yourself; Python does not enforce it. Take no look after that deadline.\n\n"
+            "memory.png is your primary memory, shared across runs. Use text, shapes, timelines and pasted crops to retain lessons, skills, discoveries and unfinished work that will help you continue and act better later. Keep writing it while you work, whenever you decide there is something to retain. Condense or erase parts when it gets crowded. Every mind may contribute; decide yourselves how to arrange that work. Use story.md and the run journals as available history. You author memory yourself; Python does not append story.md. Build learned, reusable skills into main.py as generic helpers with real arguments and return values and no task words.\n\n"
+            "Jev is a second mind for reasoning and decisions. Use decide(state,questions) to ask it for judgments, comparisons or decisions whenever you choose. Give it the relevant evidence, including images through image_part(path) when useful. locate remains available when you choose to ask Jev for a target.\n\n"
+            "When screen is present, it gives the path and geometry of the most recent capture, attached to this prompt as an image. Find targets by looking: capture the region, look at it as an image, give coordinates from what you see, and crop and look again for precision; an image reaches you scaled to at most 1024 pixels on its longer side, so map what you see through the capture's geometry. After input, inspect the effect. The screen capture outranks memory.png. A file, a green command or a confident summary is not evidence until you inspected its content.\n\n"
+            "Spawn native subagents or Trident copies whenever work is independent and decide their number yourself. Hold the desktop only while you send input. Collect child results before you finish. When passing work to another mind, include what it needs to continue: findings, failures, unfinished work, output paths, and the real IDs and paths of workers and copies.\n\n"
+            "When you end your turn, return one JSON object without Markdown:\n{\"next\":[{\"mind\":\"name\",\"instruction\":\"work and information for that mind\",\"see\":true}],\"finish\":null}\n\n"
+            "Your current mind name is supplied with the turn. Each next entry requests a turn. Reuse a name to continue its retained context, including your own; choose a new name for a fresh context. Different minds may run concurrently; turns to the same name run in request order. Choose see true for a fresh attached screen or false for no screen attachment.\n\n"
+            "An empty next requests no further work from this response. Other active and queued turns continue; the run ends when none remain. To end the whole run explicitly, return an empty next and finish \"cancel\" to cancel active work and discard queued turns, or finish \"drain\" to finish work already active or queued without scheduling more. The first whole-run finish received takes effect.")
 CONTRACT = ("You have every installed tool of this computer and the owner's standing authorization for research, files, applications, Chrome, images, shell and code; availability is proven by use, not assumed. "
             "The body is the file at body; your shell is PowerShell, so use it only to launch Python: to use the body's helpers write one script file that adds the body's directory to sys.path, imports main, and makes several calls at once rather than one process per call; write new helpers in Python, and when a package is missing install it into the workspace. "
             "The body you edit is the body of your next run: edit it when a limitation is demonstrated, and when you write the same helper twice make it one generic function in the body with real arguments, return values and no task words, then name it in your reply. "
@@ -513,61 +510,33 @@ CONTRACT = ("You have every installed tool of this computer and the owner's stan
             "locate(path,description,left,top,width,height) captures that physical region, asks Jev, and returns {x,y,present,confidence} in physical pixels. "
             "wheel(x,y,notches) scrolls at that point; frame(hwnd)->(left,top,width,height) of the window; window_info(hwnd)->hwnd, title, class_name, pid, image, frame, iconic. "
             "Do not repeat a tool or route because it worked once; vary source and method. "
-            "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy inherits this workspace's Cursor configuration, owns its own workspace and story, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
-            "Memory: story.md is append-only prose shared by every run in this workspace, run_*.md is this run's journal, evidence/<run>/ holds captures. A new session is shown memory.png instead of a story tail. The observer alone redraws that image. The screen capture outranks it. SendInput does not prove application effect; inspect.")
+            "Copies: python body --work new_dir --model your_model --sentence subgoal; a copy inherits this workspace's Cursor configuration, owns its own workspace and memory, shares the desktop mutex and the account, and dies with this run's job unless detached; collect child results before you finish. "
+            "Memory: memory.png is the primary memory shared by every run in this workspace; story.md and run_*.md are available history; evidence/<run>/ holds captures. A new session is shown memory.png, and later turns receive it again when it changes. Every mind may write it. The screen capture outranks it. SendInput does not prove application effect; inspect.")
 class Mission:
     def __init__(self, work, goal, model, run, started):
-        self.work, self.end = work, None
+        self.work = work
         self.work.mkdir(parents=True, exist_ok=True)
         self.run = run or time.strftime('%Y%m%d_%H%M%S') + '_' + str(os.getpid())
         self.journal, self.story, self.evidence = self.work / f'run_{self.run}.md', self.work / 'story.md', self.work / 'evidence' / self.run
         self.evidence.mkdir(parents=True)
-        self.story.touch()
         self.stream = Journal(self.journal)
-        self.state = dict(goal=goal, model=model, run=self.run, started=started, status='observing', sessions={}, timing=None, criteria={}, checks={}, action=None, result=None, handover=None, screen=None, workers=[], failures=[])
-        self.narrate('opening', f'Run {self.run} on {model} begins. Goal: {goal}')
+        self.state = dict(goal=goal, model=model, run=self.run, started=started, status='running', sessions={}, workers=[], failures=[], finish=None)
         self.record('goal', goal)
     def record(self, kind, value, request='unknown'):
         body = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         self.stream.say('run', kind, self.run, body, request)
-    def narrate(self, voice, text):
-        with open(self.story, 'a', encoding='utf-8') as story: story.write(f"## {utc()} {self.run} {voice}\n\n{text.strip()}\n\n")
-    def artifact(self, path):
-        path = (self.work / path).resolve()
-        path.stat()
-        return str(path)
     def observe(self, name):
-        image = capture(self.evidence / f'{name}.png', self.end)
+        image = capture(self.evidence / f'{name}.png')
         left, top, width, height = virtual_screen()
-        self.state['screen'] = dict(image=self.artifact(image), left=left, top=top, width=width, height=height, observed=utc())
-        return image
-    def initialize(self, decision):
-        timing = decision['timing']
-        if timing['deadline'] is not None:
-            if not timing['source'] or timing['source'] not in self.state['goal']: raise ValueError('a deadline needs its verbatim quote from the goal')
-            deadline = datetime.fromisoformat(timing['deadline'])
-            if deadline.tzinfo is None: raise ValueError('a deadline needs a timezone')
-            self.end = time.monotonic() + deadline.timestamp() - time.time()
-        if not decision['criteria']: raise ValueError('the goal needs acceptance criteria')
-        self.state['timing'] = dict(timing, interpreted=utc())
-        self.state['criteria'] = {f'c{number}': text for number, text in enumerate(decision['criteria'], 1)}
-        self.record('acceptance', decision)
-        remaining(self.end)
-    def verify(self, pending):
-        for key in self.state['criteria']:
-            finding = self.state['checks'][key]
-            if finding['passed'] is not True or not finding['reason'] or not finding['evidence']: raise ValueError('criterion without inspected evidence: ' + key)
-            for path in finding['evidence']: self.artifact(path)
-        if pending: raise ValueError('completion with unfinished tools: ' + ', '.join(pending))
-        remaining(self.end)
+        return image, dict(image=str(image), left=left, top=top, width=width, height=height, observed=utc())
     def initial(self):
-        return dict(goal=self.state['goal'], model=self.state['model'], started=self.state['started'], sessions=self.state['sessions'], now=utc(),
+        return dict(goal=self.state['goal'], model=self.state['model'], started=self.state['started'], sessions=dict(self.state['sessions']), now=utc(),
                     python=sys.executable, body=str(BODY), work=str(self.work), memory=dict(story=str(self.story), journal=str(self.journal), evidence=str(self.evidence)))
 class ACP:
     def __init__(self, mission, resources):
-        self.mission, self.inbox, self.counter = mission, queue.Queue(), 0
-        self.roles, self.text, self.tools, self.turn, self.ready = {}, {}, {}, [], set()
-        self.memory_ack, self.active = {}, None
+        self.mission, self.inbox, self.counter, self.pending = mission, queue.Queue(), 0, {}
+        self.roles, self.text, self.tools, self.turn, self.ready = {}, {}, {}, {}, set()
+        self.memory_ack, self.active, self.minds, self.finish, self.step = {}, set(), {}, None, 0
         config, source = mission.work / 'agent/config', ROOT / 'agent/config'
         if source != config and (source / 'cli-config.json').exists() and not (config / 'cli-config.json').exists():
             shutil.copytree(source, config, ignore=shutil.ignore_patterns('acp-sessions', 'statsig-cache.json*'), dirs_exist_ok=True)
@@ -598,25 +567,23 @@ class ACP:
             pipe.close(); self.inbox.put((label, None))
     def send(self, message):
         self.process.stdin.write((json.dumps(dict(jsonrpc='2.0', **message)) + '\n').encode('utf-8')); self.process.stdin.flush()
-    def rpc(self, method, params):
+    def rpc(self, method, params, done):
         self.counter += 1
-        identity, started = self.counter, time.monotonic()
-        remaining(self.mission.end)
+        identity = self.counter
+        self.pending[identity] = method, time.monotonic(), done
         self.send(dict(id=identity, method=method, params=params))
-        while True:
-            remaining(self.mission.end)
-            try: label, raw = self.inbox.get(timeout=0.2)
-            except queue.Empty: continue
-            if label == 'stderr':
-                if raw: self.mission.record('stderr', raw.decode('utf-8'))
-                continue
-            if raw is None: raise EOFError(f'Cursor ACP closed before answering {method}')
-            message = json.loads(raw)
-            if 'method' in message: self.notice(message); continue
-            if message['id'] != identity: raise ValueError('unexpected ACP reply: ' + json.dumps(message, ensure_ascii=False))
-            if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=identity, seconds=round(time.monotonic() - started, 3), response=message), prompt_usage(message) or 'unknown')
-            if 'error' in message: raise RuntimeError(json.dumps(message['error'], ensure_ascii=False))
-            return message['result']
+    def receive(self):
+        label, raw = self.inbox.get()
+        if label == 'stderr':
+            if raw: self.mission.record('stderr', raw.decode('utf-8'))
+            return
+        if raw is None: raise EOFError('Cursor ACP closed with pending requests')
+        message = json.loads(raw)
+        if 'method' in message: self.notice(message); return
+        method, started, done = self.pending.pop(message['id'])
+        if method == 'session/prompt': self.mission.record('prompt-result', dict(time=utc(), request=message['id'], seconds=round(time.monotonic() - started, 3), response=message), prompt_usage(message) or 'unknown')
+        if 'error' in message: raise RuntimeError(json.dumps(message['error'], ensure_ascii=False))
+        done(message['result'])
     def notice(self, message):
         method, params = message['method'], message['params']
         if method == 'session/request_permission':
@@ -655,7 +622,7 @@ class ACP:
             if kind == 'agent_message_chunk' and role != 'worker': self.text[session] = self.text.get(session, '') + text
             self.mission.stream.chunk(role, 'text' if kind == 'agent_message_chunk' else 'thought', session, text)
         elif kind in ('tool_call', 'tool_call_update'):
-            call = update['toolCallId']
+            call = (session, update['toolCallId'])
             if kind == 'tool_call':
                 self.mission.stream.close(session)
                 self.text[session] = ''
@@ -665,26 +632,50 @@ class ACP:
             if event['status'] in ('completed', 'failed'):
                 event['time'] = utc()
                 del self.tools[call]
-                self.turn.append(dict(role=role, kind=event['kind'], title=event['title'], status=event['status'], locations=[place['path'] for place in event.get('locations', [])]))
+                self.turn.setdefault(session, []).append(dict(role=role, kind=event['kind'], title=event['title'], status=event['status'], locations=[place['path'] for place in event.get('locations', [])]))
                 if event['status'] == 'failed': self.mission.state['failures'].append(dict(time=event['time'], tool=event['title']))
                 self.mission.stream.say(role, 'tool', session, tool_text(event))
         else: self.mission.stream.say(role, kind, session, json.dumps(update, ensure_ascii=False))
-    def session(self, role):
-        result = self.rpc('session/new', dict(cwd=str(self.mission.work), mcpServers=[]))
+    def schedule(self, request):
+        name = request['mind']
+        if name not in self.minds:
+            self.minds[name] = dict(session=None, queue=[], busy=True)
+            self.rpc('session/new', dict(cwd=str(self.mission.work), mcpServers=[]), lambda result: self.session(name, result))
+        self.minds[name]['queue'].append(request)
+        self.start(name)
+    def session(self, name, result):
         session = result['sessionId']
-        self.roles[session], self.text[session] = role, ''
+        self.minds[name]['session'] = session
+        self.roles[session], self.text[session], self.turn[session] = 'mind', '', []
+        self.mission.state['sessions'][name] = session
+        self.mission.record('sessions', self.mission.state['sessions'])
         mind = self.mission.state['model']
-        for option, value in (('model', GROK), ('reasoning_effort', mind.removeprefix(GROK + '-').removesuffix('-fast')), ('fast', str(mind.endswith('-fast')).lower())):
-            self.rpc('session/set_config_option', dict(sessionId=session, configId=option, value=value))
-        self.rpc('session/set_mode', dict(sessionId=session, modeId='agent'))
-        return session
-    def prompt(self, role, update, image):
-        if role == 'actor': self.mission.state['sessions'][role] = self.session(role)
-        session = self.mission.state['sessions'][role]
-        self.active, self.text[session], self.turn = session, '', []
+        options = [('session/set_config_option', dict(sessionId=session, configId=option, value=value)) for option, value in
+                   (('model', GROK), ('reasoning_effort', mind.removeprefix(GROK + '-').removesuffix('-fast')), ('fast', str(mind.endswith('-fast')).lower()))]
+        self.configure(name, options + [('session/set_mode', dict(sessionId=session, modeId='agent'))])
+    def configure(self, name, options):
+        if options:
+            method, params = options[0]
+            self.rpc(method, params, lambda _: self.configure(name, options[1:]))
+        else:
+            self.minds[name]['busy'] = False
+            self.start(name)
+    def start(self, name):
+        mind = self.minds[name]
+        if not mind['busy'] and mind['queue']: self.prompt(name, mind['queue'].pop(0))
+    def prompt(self, name, request):
+        mind = self.minds[name]
+        session, mind['busy'] = mind['session'], True
+        self.active.add(session)
+        self.text[session] = ''
+        tools, self.turn[session] = self.turn[session], []
+        self.step += 1
+        image, screen = self.mission.observe(str(self.step)) if request['see'] else (None, None)
+        update = dict(self.mission.initial(), mind=name, instruction=request['instruction'], screen=screen, tools=tools,
+                      minds={name: dict(session=mind['session'], active=mind['busy'], queued=len(mind['queue'])) for name, mind in self.minds.items()})
         text = json.dumps(update, ensure_ascii=False)
         if session not in self.ready:
-            text = '\n'.join(((OBSERVER if role == 'observer' else ACTOR), CONTRACT, json.dumps(self.mission.initial(), ensure_ascii=False), text))
+            text = '\n'.join((ORGANISM, CONTRACT, text))
             self.ready.add(session)
         content = [dict(type='text', text=text)]
         picture = self.mission.work / 'memory.png'
@@ -692,20 +683,34 @@ class ACP:
         if attached is not None and not (self.memory_ack.get(session) is None or attached > self.memory_ack[session]): attached = None
         if attached is not None: content += [dict(type='text', text=str(picture)), dict(type='image', mimeType='image/png', data=base64.b64encode(picture.read_bytes()).decode())]
         if image: content += [dict(type='text', text=str(image)), dict(type='image', mimeType='image/png', data=base64.b64encode(Path(image).read_bytes()).decode())]
-        self.mission.record('prompt', dict(time=utc(), role=role, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None, text=text))
-        try:
-            result = self.rpc('session/prompt', dict(sessionId=session, prompt=content))
-            self.active = None
-        finally:
-            self.mission.stream.close(session)
+        self.mission.record('prompt', dict(time=utc(), role='mind', mind=name, session=session, request=self.counter + 1, bytes=len(text.encode('utf-8')), image=str(image) if image else None, text=text))
+        self.rpc('session/prompt', dict(sessionId=session, prompt=content), lambda result: self.complete(name, attached, result))
+    def complete(self, name, attached, result):
+        mind = self.minds[name]
+        session, mind['busy'] = mind['session'], False
+        self.active.remove(session)
+        self.mission.stream.close(session)
         if attached is not None: self.memory_ack[session] = attached
         if result['stopReason'] != 'end_turn': raise RuntimeError('Cursor stopped the turn: ' + result['stopReason'])
-        return self.text[session]
+        decision = json.loads(self.text[session])
+        requests, finish = decision['next'], decision['finish']
+        if self.finish is None:
+            self.finish = self.mission.state['finish'] = finish
+            if finish is not None:
+                {'cancel': self.stop, 'drain': lambda: None}[finish]()
+                if finish == 'cancel': return
+            else:
+                for request in requests: self.schedule(request)
+        self.start(name)
+    def stop(self):
+        self.cancel()
+        self.pending.clear()
+        for mind in self.minds.values(): mind['queue'].clear(); mind['busy'] = False
     def cancel(self):
-        if self.active:
-            self.send(dict(method='session/cancel', params=dict(sessionId=self.active)))
-            self.mission.record('cancel', dict(session=self.active, time=utc()))
-            self.active = None
+        for session in tuple(self.active):
+            self.send(dict(method='session/cancel', params=dict(sessionId=session)))
+            self.mission.record('cancel', dict(session=session, time=utc()))
+        self.active.clear()
 def run_goal(work, goal, model, run):
     work, started = Path(work).resolve(), utc()
     with lease('work-' + hashlib.sha256(os.path.normcase(str(work)).encode('utf-8')).hexdigest()):
@@ -714,53 +719,22 @@ def run_goal(work, goal, model, run):
         try:
             with ExitStack() as resources:
                 client = ACP(mission, resources)
-                client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='3')))
-                state['sessions']['observer'] = client.session('observer')
-                mission.record('sessions', state['sessions'])
-                mission.initialize(json.loads(client.prompt('observer', dict(initialize=True), None)))
-                witness, step, update = mission.observe('0'), 0, {}
-                while True:
-                    remaining(mission.end)
-                    decision = json.loads(client.prompt('observer', dict(now=utc(), criteria=state['criteria'], timing=state['timing'], checks=state['checks'], handover=state['handover'], screen=state['screen'], **update), witness))
-                    state['checks'].update(decision['findings'])
-                    state['action'], state['handover'] = decision['action'], decision['handover']
-                    mission.narrate('judgment', decision['message'])
-                    verdict = decision['decision']
-                    if verdict == 'complete': mission.verify(list(client.tools)); state['status'] = 'completed'; break
-                    if verdict == 'blocked': state['status'] = 'blocked'; break
-                    if verdict == 'handover':
-                        handover = state['handover']
-                        if not handover or not handover['instructions']: raise ValueError('a handover needs instructions')
-                        if not handover['continue']: state['status'] = 'handover'; break
-                        for role in handover['fresh']:
-                            if role not in ('actor', 'observer'): raise ValueError('a handover refreshes actor or observer, not ' + role)
-                            state['sessions'][role] = client.session(role)
-                        mission.record('sessions', state['sessions'])
-                        state['action'] = handover['instructions']
-                    elif verdict != 'act': raise ValueError('unknown observer decision: ' + verdict)
-                    step += 1
-                    state['status'] = 'acting'
-                    state['result'] = result = client.prompt('actor', dict(action=state['action'], handover=state['handover'], screen=state['screen']), None)
-                    if result.strip(): mission.narrate('hands', result)
-                    witness = mission.observe(str(step))
-                    state['status'] = 'observing'
-                    update = dict(result=result, tools=client.turn)
-            remaining(mission.end)
-        except (Deadline, Blocked) as error:
-            state['status'] = 'deadline' if isinstance(error, Deadline) else 'blocked'
+                client.rpc('initialize', dict(protocolVersion=1, clientCapabilities=dict(fs=dict(readTextFile=False, writeTextFile=False), terminal=False, _meta=dict(parameterizedModelPicker=True, subagents=True)), clientInfo=dict(name='trident', version='3')),
+                           lambda _: client.schedule(dict(mind='trident', instruction=goal, see=True)))
+                while client.pending: client.receive()
+                state['status'] = 'ended'
+        except Blocked as error:
+            state['status'] = 'blocked'
             state['failures'].append(dict(time=utc(), error=str(error)))
         except BaseException as error:
             state['status'] = 'failed'
             state['failures'].append(dict(time=utc(), error=f'{type(error).__name__}: {error}'))
             raise
         finally:
+            for session, channel in list(mission.stream.open): mission.stream.close(session, (channel,))
             body_after = hashlib.sha256(BODY.read_bytes()).hexdigest()
             elapsed = round(time.time() - datetime.fromisoformat(started).timestamp(), 1)
-            passed = [key for key, finding in state['checks'].items() if finding['passed'] is True]
-            mission.narrate('closing', f"Run {mission.run} on {state['model']} ended {state['status']} after {elapsed} seconds. Goal: {state['goal']} Passed {len(passed)} of {len(state['criteria'])} criteria ({', '.join(passed) or 'none'}). "
-                                       f"Workers: {len(state['workers'])}. Failures: {json.dumps(state['failures'], ensure_ascii=False)}. Last action: {json.dumps(state['action'], ensure_ascii=False)}. Handover: {json.dumps(state['handover'], ensure_ascii=False)}. "
-                                       + ('The body changed during this run, so the next run executes the new body.' if body_after != body_before else 'The body did not change.'))
-            mission.record('final', dict(status=state['status'], elapsed_seconds=elapsed, passed=passed, criteria=len(state['criteria']), failures=state['failures'], workers=len(state['workers']), action=state['action'], handover=state['handover'], body_changed=body_after != body_before))
+            mission.record('final', dict(status=state['status'], elapsed_seconds=elapsed, failures=state['failures'], workers=len(state['workers']), sessions=state['sessions'], finish=state['finish'], body_changed=body_after != body_before))
         return state['status']
 PAGE = ("<!doctype html><meta charset=utf-8><title>Trident</title><style>body{margin:0;background:#10141a}pre{white-space:pre-wrap;margin:0;padding:8px 14px;font:14px/1.4 Consolas,monospace}</style><div id=p></div>"
         "<script>const p=document.getElementById('p'),s=new EventSource('/events'),els=new Map();let g=0;"
@@ -858,7 +832,7 @@ def main(argv):
     elif args.mind_file is not None: sentence = Path(args.mind_file).read_text(encoding='utf-8-sig')
     else: sentence = INITIATIVE
     if not sentence.strip(): raise ValueError('the goal sentence is empty')
-    return dict(completed=0, deadline=2, handover=2, blocked=3)[run_goal(args.work or ROOT, sentence.strip(), args.model, args.run)]
+    return dict(ended=0, blocked=3)[run_goal(args.work or ROOT, sentence.strip(), args.model, args.run)]
 if __name__ == '__main__':
     try: sys.exit(main(sys.argv[1:]))
     except Blocked as error: sys.stderr.write(str(error) + '\n'); sys.exit(3)
