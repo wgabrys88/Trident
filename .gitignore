@@ -1,3 +1,6 @@
 *
 !/.gitignore
 !/main.py
+!/main2.py
+!/docs/
+!/docs/*.md

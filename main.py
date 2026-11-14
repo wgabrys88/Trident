@@ -4,7 +4,7 @@ from ctypes import wintypes
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from PIL import ImageGrab
+from PIL import Image, ImageGrab
 BODY = Path(__file__).resolve()
 ROOT = BODY.parent
 HUB_PORT = 8765
@@ -151,6 +151,22 @@ def hook(start, end, bow, amplitude, samples, rng):
         x0, y0 = points[-2]
         points.append((x1 + (x1 - x0) * rng.uniform(0.2, 0.65), y1 + (y1 - y0) * rng.uniform(0.2, 0.65)))
     return points
+def span(origin, size, unit):
+    if len(origin) != len(size) or len(origin) != len(unit): raise ValueError('span')
+    return tuple(float(origin[i]) + float(unit[i]) * float(size[i]) for i in range(len(origin)))
+def row_runs(path, box, accept, minimum):
+    image = Image.open(path).convert('RGB')
+    x, y, width, height = (int(value) for value in box)
+    runs, start = [], None
+    for row in range(y, y + height):
+        count = sum(1 for col in range(x, x + width) if accept(image.getpixel((col, row))))
+        if count >= minimum:
+            if start is None: start = row
+        elif start is not None:
+            runs.append((start, row - 1))
+            start = None
+    if start is not None: runs.append((start, y + height - 1))
+    return runs
 def chord(*keys):
     send(*(INPUT(type=1, ki=KEYBDINPUT(code, 0, transition, 0, 0)) for code, transition in keys))
 def place(hwnd, left, top, width, height):
